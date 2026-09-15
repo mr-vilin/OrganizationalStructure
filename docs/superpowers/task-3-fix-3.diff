@@ -1,0 +1,259 @@
+--- R2
++++ R3
+@@ -1,4 +1,4 @@
+-# Task 3 R2 review package (no Git)
++# Task 3 R3 review package (no Git)
+ 
+ ## deploy/README.md
+ ```
+@@ -294,6 +294,9 @@
+   const previews:any[]=[]; const conflict=vi.fn(); vi.stubGlobal('fetch', async (url:string, init:RequestInit) => { const body=JSON.parse(String(init.body)); if(url.endsWith('/preview')) { previews.push(body); return Response.json({data:{changes:body.changes,affected_employee_count:1},meta:{}}); } return Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409}); });
+   const {rerender}=render(<App><StoreEditor departments={departments} dataVersion={42} open onClose={()=>{}} onConflict={conflict} onSaved={()=>{}} /></App>); const notes=screen.getByDisplayValue('旧备注'); await userEvent.clear(notes); await userEvent.type(notes,'用户修改必须保留'); await userEvent.click(screen.getByRole('button',{name:'预览影响'})); await userEvent.click(await screen.findByRole('button',{name:'确认提交'})); await waitFor(()=>expect(conflict).toHaveBeenCalled()); rerender(<App><StoreEditor departments={departments.map(x=>({...x,notes:'服务器旧备注'}))} dataVersion={43} open onClose={()=>{}} onConflict={conflict} onSaved={()=>{}} /></App>); expect(screen.getByDisplayValue('用户修改必须保留')).toBeTruthy(); const retry=screen.getByText('预览影响').closest('button')!; await waitFor(()=>expect(retry.disabled).toBe(false)); await userEvent.click(retry); await waitFor(()=>expect(previews).toHaveLength(2)); expect(previews[1].data_version).toBe(43); expect(previews[1].changes).toHaveLength(2); expect(previews[1].changes[0].notes).toBe('用户修改必须保留');
+ });
++it('首次预览409会刷新父基准并保留草稿供新版本重试', async () => {
++  const bodies:any[]=[]; const conflict=vi.fn(); let first=true; vi.stubGlobal('fetch',async(_url:string,init:RequestInit)=>{const body=JSON.parse(String(init.body));bodies.push(body);if(first){first=false;return Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409})}return Response.json({data:{changes:body.changes,affected_employee_count:2},meta:{}})}); const {rerender}=render(<App><StoreEditor departments={departments} dataVersion={7} open onClose={()=>{}} onConflict={conflict} onSaved={()=>{}}/></App>); const notes=screen.getByDisplayValue('旧备注');await userEvent.clear(notes);await userEvent.type(notes,'预览草稿');await userEvent.click(screen.getByRole('button',{name:'预览影响'}));await waitFor(()=>expect(conflict).toHaveBeenCalled());rerender(<App><StoreEditor departments={departments.map(x=>({...x}))} dataVersion={8} open onClose={()=>{}} onConflict={conflict} onSaved={()=>{}}/></App>);expect(screen.getByDisplayValue('预览草稿')).toBeTruthy();const retry=screen.getByText('预览影响').closest('button')!;await waitFor(()=>expect(retry.disabled).toBe(false));await userEvent.click(retry);await screen.findByText('预计影响 2 位员工');expect(bodies[1].data_version).toBe(8);expect(bodies[1].changes).toHaveLength(2);
++});
+ 
+ ```
+ 
+@@ -317,7 +320,7 @@
+   useEffect(() => { if (open) { form.setFieldsValue({ changes: departments.map(item => ({ department_id: item.id, is_store: item.is_store, store_code: item.store_code, notes: item.notes })) }); setPreview(null); setConflict(false); } }, [form, open]);
+   const fingerprint = useMemo(() => stableFingerprint(values?.changes ?? []), [values]);
+   const previewValid = Boolean(preview && preview.version === dataVersion && preview.fingerprint === fingerprint);
+-  async function buildPreview() { if (dataVersion === undefined) return; const { changes } = await form.validateFields(); setBusy(true); setConflict(false); try { const result = await request<{ changes: StoreChange[]; affected_employee_count: number }>('/admin/api/stores/batch/preview', { method: 'POST', body: { data_version: dataVersion, changes } }); form.setFieldsValue({ changes: result.data.changes }); setPreview({ changes: result.data.changes, affectedEmployeeCount: result.data.affected_employee_count, version: dataVersion, fingerprint: stableFingerprint(result.data.changes) }); setPreviewOpen(true); } catch (error) { message.error(error instanceof Error ? error.message : '预览失败'); } finally { setBusy(false); } }
++  async function buildPreview() { if (dataVersion === undefined) return; const { changes } = await form.validateFields(); setBusy(true); setConflict(false); try { const result = await request<{ changes: StoreChange[]; affected_employee_count: number }>('/admin/api/stores/batch/preview', { method: 'POST', body: { data_version: dataVersion, changes } }); form.setFieldsValue({ changes: result.data.changes }); setPreview({ changes: result.data.changes, affectedEmployeeCount: result.data.affected_employee_count, version: dataVersion, fingerprint: stableFingerprint(result.data.changes) }); setPreviewOpen(true); } catch (error) { if (error instanceof ApiError && error.status === 409) { setConflict(true); setPreview(null); onConflict(); } else message.error(error instanceof Error ? error.message : '预览失败'); } finally { setBusy(false); } }
+   async function applyPreview() { if (!previewValid || !preview) return; setBusy(true); try { await request('/admin/api/stores/batch/apply', { method: 'POST', body: { data_version: preview.version, changes: preview.changes } }); message.success(`已保存 ${preview.changes.length} 个部门的门店设置`); setPreviewOpen(false); onSaved(); onClose(); } catch (error) { if (error instanceof ApiError && error.status === 409) { setConflict(true); setPreview(null); setPreviewOpen(false); onConflict(); } else message.error(error instanceof Error ? error.message : '保存失败'); } finally { setBusy(false); } }
+   return <><Drawer title={`设置门店属性（${departments.length} 个部门）`} open={open} onClose={onClose} destroyOnHidden size={560} footer={<Space><Button onClick={onClose}>取消</Button><Button type="primary" loading={busy} onClick={buildPreview}>预览影响</Button></Space>}>
+     {conflict && <Alert type="warning" showIcon title="数据已更新，请重新预览" description="已刷新基准版本，并保留当前表单内容。" />}
+@@ -388,7 +391,7 @@
+ import { useResource } from '../services/useResource';
+ import { ResourceState } from '../components/ResourceState';
+ import { PageHeader } from '../components/PageHeader';
+-export function EmployeePage() { const { id } = useParams(); const nav = useNavigate(); const resource = useResource<Employee>(id ? `/admin/api/employees/${encodeURIComponent(id)}` : null); const employee = resource.data; return <><PageHeader title="人员详情" description="解释部门关系、全部门店与唯一主门店的派生结果。" extra={<Button icon={<ArrowLeftOutlined />} onClick={() => nav('/organization')}>返回组织</Button>} /><ResourceState {...resource}>{employee ? <div className="detail-grid"><Card><Descriptions title={employee.name} column={{ xs: 1, md: 2 }} items={[{ key: 'id', label: '员工 ID', children: employee.id }, { key: 'status', label: '状态', children: <Tag>{statusLabel(employee.status)}</Tag> }, { key: 'resolution', label: '主门店解析', children: primaryStoreLabel(employee.primary_store_status) }, { key: 'primary', label: '主门店 ID', children: employee.primary_store_id ?? '—' }]} /><Result status={employee.primary_store_status === 'resolved' ? 'success' : 'info'} title={primaryStoreLabel(employee.primary_store_status)} subTitle="主门店仅由唯一飞书主部门向上寻找最近门店派生；数组顺序不代表主归属。" /></Card><Card title="部门关系"><Table size="small" pagination={false} rowKey="id" dataSource={employee.departments} columns={[{ title: '部门', dataIndex: 'name' }, { title: '部门 ID', dataIndex: 'id' }, { title: '关系', render: (_, row) => row.id === employee.primary_department_id ? <Tag color="blue">主部门</Tag> : '兼任部门' }]} /></Card><Card title="全部门店归属"><Table size="small" pagination={false} rowKey="id" dataSource={employee.stores} columns={[{ title: '门店', dataIndex: 'name' }, { title: '门店 ID', dataIndex: 'id' }, { title: '归属', dataIndex: 'is_primary', render: value => value ? <Tag color="blue">主门店</Tag> : '其他门店' }]} /></Card></div> : null}</ResourceState></>; }
++export function EmployeePage() { const { id } = useParams(); const nav = useNavigate(); const resource = useResource<Employee>(id ? `/admin/api/employees/${encodeURIComponent(id)}` : null); const employee = resource.data; const quality=(value?:string)=>value==='complete'?'完整':value==='pending_verification'?'保留旧资料，待核实':value==='inconsistent'?'关系不一致':value==='unknown'?'未知':value??'—'; return <><PageHeader title="人员详情" description="解释部门关系、全部门店与唯一主门店的派生结果。" extra={<Button icon={<ArrowLeftOutlined />} onClick={() => nav('/organization')}>返回组织</Button>} /><ResourceState {...resource}>{employee ? <div className="detail-grid"><Card><Descriptions title={employee.name} column={{ xs: 1, md: 2 }} items={[{ key: 'id', label: '员工 ID', children: employee.id }, { key: 'status', label: '状态', children: <Tag>{statusLabel(employee.status)}</Tag> }, { key:'quality',label:'同步质量',children:<Tag color={employee.sync_quality==='complete'?'green':'orange'}>{quality(employee.sync_quality)}</Tag> }, { key: 'resolution', label: '主门店解析', children: primaryStoreLabel(employee.primary_store_status) }, { key: 'primary', label: '主门店 ID', children: employee.primary_store_id ?? '—' }]} /><Result status={employee.sync_quality==='complete'&&employee.primary_store_status === 'resolved' ? 'success' : 'info'} title={employee.sync_quality==='complete'?primaryStoreLabel(employee.primary_store_status):quality(employee.sync_quality)} subTitle="主门店仅由唯一飞书主部门向上寻找最近门店派生；数组顺序不代表主归属。" /></Card><Card title="部门关系"><Table size="small" pagination={false} rowKey="id" dataSource={employee.departments} columns={[{ title: '部门', dataIndex: 'name' }, { title: '完整路径', dataIndex:'path',render:value=>value?.join(' / ')||'—' }, { title:'同步质量',dataIndex:'sync_quality',render:quality }, { title: '关系', render: (_, row) => row.id === employee.primary_department_id ? <Tag color="blue">主部门</Tag> : '兼任部门' }]} /></Card><Card title="全部门店归属"><Table size="small" pagination={false} rowKey="id" dataSource={employee.stores} columns={[{ title: '门店', dataIndex: 'name' }, { title:'派生路径',dataIndex:'path_names',render:value=>value?.join(' → ')||'—' }, { title: '归属', dataIndex: 'is_primary', render: value => value ? <Tag color="blue">主门店</Tag> : '其他门店' }]} /></Card></div> : null}</ResourceState></>; }
+ 
+ ```
+ 
+@@ -410,6 +413,9 @@
+   await user.click(screen.getByRole('button',{name:/查\s*询/}));
+   await waitFor(()=>expect(urls.at(-1)).toContain('source=feishu')); expect(urls.at(-1)).toContain('action=%E6%9B%B4%E6%96%B0'); expect(urls.at(-1)).toContain('actor=ou_actor');
+   await user.click(screen.getByRole('button',{name:/重\s*置/})); await waitFor(()=>expect(urls.at(-1)).toBe('/admin/api/change-logs?limit=100'));
++});
++it('把日志起止时间转换成 UTC ISO 参数', async () => {
++  const urls:string[]=[]; const user=userEvent.setup({pointerEventsCheck:0}); vi.stubGlobal('fetch',async(url:string)=>{urls.push(url);return Response.json({data:[],meta:{next_cursor:null}})}); render(<App><LogsPage/></App>); await waitFor(()=>expect(urls.length).toBeGreaterThan(0)); const [start,end]=screen.getAllByRole('textbox').filter(node=>node.hasAttribute('date-range')); await user.type(start,'2026-09-15 08:00:00'); await user.keyboard('{Enter}'); await user.type(end,'2026-09-15 10:30:00'); await user.keyboard('{Enter}'); await user.click(screen.getByRole('button',{name:/查\s*询/})); await waitFor(()=>expect(urls.at(-1)).toContain('committed_after=')); const parsed=new URL(urls.at(-1)!,'http://local'); expect(parsed.searchParams.get('committed_after')).toMatch(/^2026-09-15T.*Z$/); expect(parsed.searchParams.get('committed_before')).toMatch(/^2026-09-15T.*Z$/);
+ });
+ 
+ ```
+@@ -433,7 +439,7 @@
+   function reset() { form.resetFields(); setFilters({}); }
+   const filtersForm = <Form form={form} layout="inline" onFinish={search}>
+     <Form.Item name="object_id"><Input placeholder="对象 ID" /></Form.Item>
+-    <Form.Item name="object_type"><Select allowClear placeholder="对象类型" style={{ width: 140 }} options={['department','employee','store','api_client','admin'].map(value => ({ value, label: value }))} /></Form.Item>
++    <Form.Item name="object_type"><Select allowClear placeholder="对象类型" style={{ width: 160 }} options={['department','employee','store','api_client','admin_allowlist','event','security','settings','dataset'].map(value => ({ value, label: value }))} /></Form.Item>
+     <Form.Item name="action"><Input placeholder="操作" /></Form.Item>
+     <Form.Item name="source"><Select allowClear placeholder="操作来源" style={{ width: 140 }} onChange={value => form.setFieldValue('source', value)} options={[{ value:'admin', label:'管理员' }, { value:'feishu', label:'飞书同步' }]} /></Form.Item>
+     <Form.Item name="actor"><Input placeholder="操作者" /></Form.Item><Form.Item name="job_id"><Input placeholder="任务 ID" /></Form.Item>
+@@ -459,22 +465,61 @@
+   const employeeUrls:string[]=[]; let departmentReads=0; let employeeReads=0;
+   vi.stubGlobal('fetch', async (url:string) => {
+     if(url.startsWith('/admin/api/departments')) { departmentReads++; const version=departmentReads===1?1:2; return Response.json({data:[department],meta:{dataset_epoch:'epoch',data_version:version,next_cursor:null}}); }
+-    if(url.startsWith('/admin/api/employees')) { employeeUrls.push(url); employeeReads++; if(employeeReads<=3) return Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409}); return Response.json({data:[],meta:{dataset_epoch:'epoch',data_version:2,next_cursor:null}}); }
++    if(url.startsWith('/admin/api/employees')) { employeeUrls.push(url); employeeReads++; if(employeeReads===1) return Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409}); return Response.json({data:[],meta:{dataset_epoch:'epoch',data_version:2,next_cursor:null}}); }
+     throw new Error(url);
+   });
+   render(<App><MemoryRouter><OrganizationPage /></MemoryRouter></App>); await userEvent.click(await screen.findByText('总部')); await waitFor(()=>expect(departmentReads).toBe(2)); await waitFor(()=>expect(employeeUrls.some(url=>url.includes('data_version=2'))).toBe(true)); expect(employeeUrls.every(url=>url.includes('dataset_epoch=epoch')&&url.includes('data_version='))).toBe(true);
++  expect(employeeReads).toBe(2);
+ });
+ it('搜索深层节点保留并展开祖先，清除搜索后树仍可操作', async () => {
+   const rows=[department,{...department,id:'d2',parent_id:'d1',name:'区域'},{...department,id:'d3',parent_id:'d2',name:'人民路店'}];
+   vi.stubGlobal('fetch', async (url:string) => url.startsWith('/admin/api/departments') ? Response.json({data:rows,meta:{dataset_epoch:'e',data_version:1,next_cursor:null}}) : Response.json({data:[],meta:{dataset_epoch:'e',data_version:1,next_cursor:null}}));
+-  render(<App><MemoryRouter><OrganizationPage /></MemoryRouter></App>); const search=await screen.findByPlaceholderText('搜索部门名称或 ID'); await userEvent.type(search,'人民路'); expect(await screen.findByText('总部')).toBeTruthy(); expect(screen.getByText('区域')).toBeTruthy(); expect(screen.getByText('人民路店')).toBeTruthy(); await userEvent.clear(search); await userEvent.click(screen.getByText('区域')); expect(screen.getByText('人民路店')).toBeTruthy();
++  render(<App><MemoryRouter><OrganizationPage /></MemoryRouter></App>);
++  const root = await screen.findByRole('treeitem', { name: /总部/ });
++  const switcher = root.querySelector('.ant-tree-switcher') as HTMLElement;
++  await userEvent.click(switcher);
++  await waitFor(() => expect(screen.queryByText('区域')).toBeNull());
++  await userEvent.click(switcher);
++  expect(await screen.findByText('区域')).toBeTruthy();
++  const search=screen.getByPlaceholderText('搜索部门名称或 ID'); await userEvent.type(search,'人民路'); expect(await screen.findByText('总部')).toBeTruthy(); expect(screen.getByText('区域')).toBeTruthy(); expect(screen.getByText('人民路店')).toBeTruthy(); await userEvent.clear(search); await userEvent.click(screen.getByText('区域')); expect(screen.getByText('人民路店')).toBeTruthy();
++});
++it('持续版本冲突在有限整组重试后停止并提供手动重试', async () => {
++  let departmentReads=0; let employeeReads=0;
++  vi.stubGlobal('fetch', async (url:string) => { if(url.startsWith('/admin/api/departments')) { departmentReads++; return Response.json({data:[department],meta:{dataset_epoch:'e',data_version:departmentReads,next_cursor:null}}); } employeeReads++; return Response.json({error:{code:'DATASET_CHANGED',message:'数据持续变化'}},{status:409}); });
++  render(<App><MemoryRouter><OrganizationPage /></MemoryRouter></App>); await userEvent.click(await screen.findByText('总部')); await waitFor(()=>expect(departmentReads).toBe(2)); await waitFor(()=>expect(employeeReads).toBe(2)); await screen.findByText('数据持续变化'); await userEvent.click(screen.getByRole('button',{name:/重\s*试/})); await waitFor(()=>expect(departmentReads).toBeGreaterThan(2));
++});
++it('父页面批量提交冲突后保留完整草稿并以新版本重提', async () => {
++  const rows=[department,{...department,id:'d2',parent_id:'d1',name:'分店',path:['总部','分店'],notes:'分店备注'}];
++  const previews:any[]=[]; let departmentReads=0; let applyReads=0;
++  vi.stubGlobal('fetch',async(url:string,init?:RequestInit)=>{
++    if(url.startsWith('/admin/api/departments')) { departmentReads++; return Response.json({data:rows.map(row=>({...row})),meta:{dataset_epoch:'e',data_version:departmentReads,next_cursor:null}}); }
++    if(url.endsWith('/preview')) { const body=JSON.parse(String(init?.body)); previews.push(body); return Response.json({data:{changes:body.changes,affected_employee_count:2},meta:{}}); }
++    if(url.endsWith('/apply')) { applyReads++; return applyReads===1 ? Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409}) : Response.json({data:{},meta:{}}); }
++    throw new Error(url);
++  });
++  render(<App><MemoryRouter><OrganizationPage /></MemoryRouter></App>);
++  const checks=await screen.findAllByRole('checkbox');
++  await userEvent.click(checks[0]); await userEvent.click(checks[1]);
++  await userEvent.click(screen.getByRole('button',{name:/批量设置/}));
++  const note=screen.getByDisplayValue('分店备注'); await userEvent.clear(note); await userEvent.type(note,'冲突后保留');
++  await userEvent.click(screen.getByRole('button',{name:'预览影响'}));
++  await userEvent.click(await screen.findByRole('button',{name:'确认提交'}));
++  await waitFor(()=>expect(departmentReads).toBe(2));
++  expect(screen.getByDisplayValue('冲突后保留')).toBeTruthy();
++  const retry=screen.getByText('预览影响').closest('button')!;
++  await waitFor(()=>expect(retry.disabled).toBe(false));
++  await userEvent.click(retry);
++  await waitFor(()=>expect(previews).toHaveLength(2));
++  expect(previews[1].data_version).toBe(2); expect(previews[1].changes).toHaveLength(2);
++  await userEvent.click(await screen.findByRole('button',{name:/确认提交/}));
++  await waitFor(()=>expect(applyReads).toBe(2));
+ });
+ 
+ ```
+ 
+ ## frontend/src/pages/OrganizationPage.tsx
+ ```
+-import { useEffect, useMemo, useState } from 'react';
++import { useEffect, useMemo, useRef, useState } from 'react';
+ import { App, Button, Card, Drawer, Input, Radio, Space, Table, Tag, Tree, Typography } from 'antd';
+ import { EditOutlined, MenuOutlined, ShopOutlined, SyncOutlined, UserOutlined } from '@ant-design/icons';
+ import { useNavigate } from 'react-router-dom';
+@@ -495,8 +540,12 @@
+   const [selected, setSelected] = useState<string>(); const [checked, setChecked] = useState<React.Key[]>([]); const [search, setSearch] = useState(''); const [descendants, setDescendants] = useState(false); const [editorOpen, setEditorOpen] = useState(false); const [treeOpen, setTreeOpen] = useState(false); const [syncing, setSyncing] = useState(false);
+   const versionQuery = { dataset_epoch: departments.meta.dataset_epoch, data_version: departments.meta.data_version };
+   const versionReady = Boolean(departments.data && departments.meta.dataset_epoch && departments.meta.data_version !== undefined);
+-  const employees = useAllResource<Employee>(selected && versionReady ? '/admin/api/employees' + query({ department_id: selected, include_descendants: descendants, limit: 200, ...versionQuery }) : null);
+-  useEffect(() => { if (employees.error?.code === 'DATASET_CHANGED') departments.reload(); }, [employees.error?.code, departments.reload]);
++  const rawEmployees = useAllResource<Employee>(selected && versionReady ? '/admin/api/employees' + query({ department_id: selected, include_descendants: descendants, limit: 200, ...versionQuery }) : null);
++  const groupRetries = useRef(0);
++  useEffect(() => { if (rawEmployees.error?.code === 'DATASET_CHANGED' && groupRetries.current < 2) { groupRetries.current += 1; departments.reload(); } }, [rawEmployees.error?.code, departments.reload]);
++  useEffect(() => { if (rawEmployees.data) groupRetries.current = 0; }, [rawEmployees.data]);
++  function retryGroup() { groupRetries.current = 0; departments.reload(); }
++  const employees = { ...rawEmployees, reload: retryGroup };
+   const { visible, hits, expanded } = useMemo(() => { const all = departments.data ?? []; if (!search) return { visible: all, hits: new Set<string>(), expanded: [] as string[] }; const matched = all.filter(d => `${d.name} ${d.id}`.toLowerCase().includes(search.toLowerCase())); const hitIds = new Set(matched.map(d => d.id)); const keep = new Set(hitIds); matched.forEach(d => { let parent = d.parent_id; while (parent) { keep.add(parent); parent = all.find(x => x.id === parent)?.parent_id ?? null; } }); return { visible: all.filter(d => keep.has(d.id)), hits: hitIds, expanded: [...keep] }; }, [departments.data, search]);
+   const current = departments.data?.find(d => d.id === selected); const edited = (departments.data ?? []).filter(d => checked.map(String).includes(d.id));
+   function select(keys: React.Key[]) { setSelected(keys[0] ? String(keys[0]) : undefined); if (narrow) setTreeOpen(false); }
+@@ -530,14 +579,27 @@
+   const allowlist = <><Alert type="warning" showIcon title="移出管理员会立即撤销其所有活动会话；移除最后一名管理员也会立即生效。" /><Form className="block-gap" layout="inline" onFinish={values => mutate('/admin/api/admin-allowlist', 'POST', values, admins.reload)}><Form.Item name="open_id" rules={[{ required: true, message: '请输入 open_id' }]}><Input placeholder="ou_..." /></Form.Item><Button type="primary" htmlType="submit" loading={busy}>添加管理员</Button></Form><ResourceState {...admins} empty={!admins.data?.length}><Table rowKey="open_id" dataSource={admins.data ?? []} pagination={false} columns={[{ title: '管理员', render: (_, row) => row.name ?? row.open_id }, { title: 'open_id', dataIndex: 'open_id' }, { title: '添加时间', dataIndex: 'created_at', render: formatTime }, { title: '操作', render: (_, row) => <Popconfirm title="确认移出管理员白名单？" description="该管理员的活动会话会立即撤销。" onConfirm={() => mutate(`/admin/api/admin-allowlist/${encodeURIComponent(row.open_id)}`, 'DELETE', undefined, admins.reload)}><Button danger type="link">移出</Button></Popconfirm> }]} /></ResourceState></>;
+   const clientTab = <><Alert type="info" showIcon title="每个业务系统使用独立只读凭据" description="密钥仅在创建或轮换后展示一次，请立即保存。" /><Form className="block-gap" layout="inline" onFinish={values => mutate('/admin/api/api-clients', 'POST', values, clients.reload)}><Form.Item name="name" rules={[{ required: true, message: '请输入使用方名称' }]}><Input placeholder="例如：薪资系统" /></Form.Item><Button type="primary" htmlType="submit" loading={busy}>创建客户端</Button></Form><ResourceState {...clients} empty={!clients.data?.length}><Table rowKey={row => row.client_id ?? row.id ?? row.name} dataSource={clients.data ?? []} pagination={false} scroll={{ x: 720 }} columns={[{ title: '使用方', dataIndex: 'name' }, { title: '凭据标识', render: (_, row) => row.client_id ?? row.id }, { title: '状态', render: (_, row) => <Tag color={row.revoked_at || row.active === false ? 'default' : 'success'}>{row.revoked_at || row.active === false ? '已撤销' : '启用'}</Tag> }, { title: '最近调用', dataIndex: 'last_used_at', render: formatTime }, { title: '操作', render: (_, row) => { const id = row.client_id ?? row.id; return <Space><Popconfirm title="轮换凭据？" description="旧凭据会立即失效，新密钥仅展示一次。" onConfirm={() => mutate(`/admin/api/api-clients/${encodeURIComponent(id ?? '')}/rotate`, 'POST', undefined, clients.reload)}><Button type="link" disabled={!id || Boolean(row.revoked_at)}>轮换</Button></Popconfirm><Popconfirm title="撤销客户端？" onConfirm={() => mutate(`/admin/api/api-clients/${encodeURIComponent(id ?? '')}/revoke`, 'POST', undefined, clients.reload)}><Button danger type="link" disabled={!id || Boolean(row.revoked_at)}>撤销</Button></Popconfirm></Space>; } }]} /></ResourceState></>;
+   const scheduleTab = <ResourceState {...schedule}>{schedule.data && <Form form={scheduleForm} layout="vertical" onFinish={saveSchedule} style={{ maxWidth: 420 }}><Form.Item name="enabled" label="启用每日核对" valuePropName="checked"><Switch /></Form.Item><Form.Item name="local_time" label="执行时间（北京时间）" rules={[{ required: true }]}><TimePicker format="HH:mm" minuteStep={5} /></Form.Item><Descriptions column={1} items={[{ key: 'zone', label: '时区', children: schedule.data.timezone }, { key: 'updated', label: '更新时间', children: formatTime(schedule.data.updated_at) }]} /><Button type="primary" htmlType="submit" loading={busy}>保存计划</Button></Form>}</ResourceState>;
+-  return <><PageHeader title="管理设置" description="管理管理员资格、只读 API 客户端、连接摘要与每日核对。" /><Card><Tabs items={[{ key: 'connection', label: '飞书连接', children: <Alert type="info" showIcon title="连接摘要请在同步中心查看" description="仅展示后端返回的脱敏应用、租户和声明权限。" /> }, { key: 'admins', label: '管理员白名单', children: allowlist }, { key: 'clients', label: 'API 客户端', children: clientTab }, { key: 'schedule', label: '每日核对', children: scheduleTab }]} /></Card><Modal title="请立即保存新凭据" open={Boolean(credential)} closable={false} mask={{ closable: false }} footer={<Button type="primary" onClick={() => setCredential(null)}>我已安全保存</Button>}><Alert type="warning" showIcon title="关闭后无法再次查看此密钥" /><Typography.Paragraph copyable className="credential"><strong>客户端：</strong>{credential?.client_id}<br /><strong>密钥：</strong>{credential?.secret}</Typography.Paragraph></Modal></>;
+-}
++  return <><PageHeader title="管理设置" description="管理管理员资格、只读 API 客户端、连接摘要与每日核对。" /><Card><Tabs items={[{ key: 'connection', label: '飞书连接', children: <Alert type="info" showIcon title="连接摘要请在同步中心查看" description="仅展示后端返回的脱敏应用、租户和声明权限。" /> }, { key: 'admins', label: '管理员白名单', children: allowlist }, { key: 'clients', label: 'API 客户端', children: clientTab }, { key: 'schedule', label: '每日核对', forceRender: true, children: scheduleTab }]} /></Card><Modal title="请立即保存新凭据" open={Boolean(credential)} closable={false} mask={{ closable: false }} footer={<Button type="primary" onClick={() => setCredential(null)}>我已安全保存</Button>}><Alert type="warning" showIcon title="关闭后无法再次查看此密钥" /><Typography.Paragraph copyable className="credential"><strong>客户端：</strong>{credential?.client_id}<br /><strong>密钥：</strong>{credential?.secret}</Typography.Paragraph></Modal></>;
++}
++
++```
++
++## frontend/src/pages/StoresPage.test.tsx
++```
++import { App } from 'antd';
++import { render, screen, waitFor } from '@testing-library/react';
++import userEvent from '@testing-library/user-event';
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
++import { StoresPage } from './StoresPage';
++const store={id:'s1',department_id:'s1',parent_id:null,name:'一店',path:['一店'],status:'active',is_virtual_root:false,is_store:true,store_code:'S1',notes:null,employee_count:1,primary_employee_count:1};
++beforeEach(()=>{vi.stubGlobal('matchMedia',()=>({matches:false,addListener:vi.fn(),removeListener:vi.fn(),addEventListener:vi.fn(),removeEventListener:vi.fn()}));vi.stubGlobal('ResizeObserver',class{observe(){}unobserve(){}disconnect(){}})}); afterEach(()=>vi.unstubAllGlobals());
++it('门店员工首次409立即重读父版本且从不发无版本请求',async()=>{let parentReads=0;let childReads=0;const childUrls:string[]=[];vi.stubGlobal('fetch',async(url:string)=>{if(url.includes('/employees')){childReads++;childUrls.push(url);if(childReads===1)return Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409});return Response.json({data:[],meta:{dataset_epoch:'e',data_version:2,next_cursor:null}})}parentReads++;return Response.json({data:[store],meta:{dataset_epoch:'e',data_version:parentReads,next_cursor:null}})});render(<App><StoresPage/></App>);await userEvent.click(await screen.findByRole('button',{name:'查看员工'}));await waitFor(()=>expect(parentReads).toBe(2));await waitFor(()=>expect(childReads).toBe(2));expect(childUrls.every(url=>url.includes('dataset_epoch=e')&&url.includes('data_version='))).toBe(true)});
+ 
+ ```
+ 
+ ## frontend/src/pages/StoresPage.tsx
+ ```
+-import { useEffect, useMemo, useState } from 'react';
++import { useEffect, useMemo, useRef, useState } from 'react';
+ import { Button, Card, Drawer, Input, Radio, Space, Switch, Table, Tag } from 'antd';
+ import type { Employee, Store } from '../domain';
+ import { statusLabel } from '../domain';
+@@ -550,8 +612,12 @@
+   const [search, setSearch] = useState(''); const [inactive, setInactive] = useState(false); const [editing, setEditing] = useState<Store | null>(null); const [viewing, setViewing] = useState<Store | null>(null); const [membership, setMembership] = useState<'all'|'primary'>('all');
+   const stores = useAllResource<Store>('/admin/api/stores' + query({ include_inactive: inactive, limit: 200 }));
+   const versionReady = Boolean(stores.data && stores.meta.dataset_epoch && stores.meta.data_version !== undefined);
+-  const people = useAllResource<Employee>(viewing && versionReady ? `/admin/api/stores/${encodeURIComponent(viewing.id)}/employees` + query({ membership, include_inactive: true, limit: 200, dataset_epoch: stores.meta.dataset_epoch, data_version: stores.meta.data_version }) : null);
+-  useEffect(() => { if (people.error?.code === 'DATASET_CHANGED') stores.reload(); }, [people.error?.code, stores.reload]);
++  const rawPeople = useAllResource<Employee>(viewing && versionReady ? `/admin/api/stores/${encodeURIComponent(viewing.id)}/employees` + query({ membership, include_inactive: true, limit: 200, dataset_epoch: stores.meta.dataset_epoch, data_version: stores.meta.data_version }) : null);
++  const groupRetries = useRef(0);
++  useEffect(() => { if (rawPeople.error?.code === 'DATASET_CHANGED' && groupRetries.current < 2) { groupRetries.current += 1; stores.reload(); } }, [rawPeople.error?.code, stores.reload]);
++  useEffect(() => { if (rawPeople.data) groupRetries.current = 0; }, [rawPeople.data]);
++  function retryGroup() { groupRetries.current = 0; stores.reload(); }
++  const people = { ...rawPeople, reload: retryGroup };
+   const data = useMemo(() => (stores.data ?? []).filter(s => `${s.name} ${s.store_code ?? ''}`.toLowerCase().includes(search.toLowerCase())), [stores.data, search]);
+   return <><PageHeader title="门店管理" description="维护门店编码和备注，并查看门店归属员工。" /><Card><Space className="toolbar" wrap><Input.Search allowClear placeholder="搜索门店名称或编码" onChange={e => setSearch(e.target.value)} /><span>包含失效门店 <Switch checked={inactive} onChange={setInactive} /></span></Space><ResourceState {...stores} empty={!data.length}><Table rowKey="id" dataSource={data} pagination={{ pageSize: 20 }} scroll={{ x: 900 }} columns={[{ title: '门店', dataIndex: 'name' }, { title: '编码', dataIndex: 'store_code', render: v => v || '—' }, { title: '路径', dataIndex: 'path', render: v => v.join(' / ') }, { title: '全部归属人数', dataIndex: 'employee_count' }, { title: '主门店人数', dataIndex: 'primary_employee_count' }, { title: '状态', dataIndex: 'status', render: v => <Tag color={v === 'active' ? 'success' : v === 'inactive' ? 'default' : 'warning'}>{statusLabel(v)}</Tag> }, { title: '操作', fixed: 'right', render: (_, row) => <Space><Button type="link" onClick={() => setViewing(row)}>查看员工</Button><Button type="link" onClick={() => setEditing(row)}>编辑</Button></Space> }]} /></ResourceState></Card><Drawer title={`${viewing?.name ?? ''} · 归属员工`} open={Boolean(viewing)} onClose={() => setViewing(null)} size={720}><Radio.Group className="toolbar" value={membership} onChange={e => setMembership(e.target.value)} options={[{ label: '全部归属', value: 'all' }, { label: '主门店归属', value: 'primary' }]} /><ResourceState {...people} empty={!people.data?.length}><Table rowKey="id" dataSource={people.data ?? []} pagination={{ pageSize: 20 }} columns={[{ title: '姓名', dataIndex: 'name' }, { title: '员工 ID', dataIndex: 'id' }, { title: '状态', dataIndex: 'status', render: statusLabel }]} /></ResourceState></Drawer>{editing && <StoreEditor departments={[editing]} dataVersion={stores.meta.data_version} open onClose={() => setEditing(null)} onConflict={stores.reload} onSaved={stores.reload} />}</>;
+ }
+@@ -560,7 +626,7 @@
+ 
+ ## frontend/src/pages/SyncPage.tsx
+ ```
+-import { useEffect, useState } from 'react';
++import { useEffect, useRef, useState } from 'react';
+ import { Alert, App, Button, Card, Col, Descriptions, Drawer, Row, Select, Space, Statistic, Table, Tag } from 'antd';
+ import { ReloadOutlined } from '@ant-design/icons';
+ import type { SyncJob } from '../domain';
+@@ -570,19 +636,21 @@
+ import { useAllResource } from '../services/useAllResource';
+ import { PageHeader } from '../components/PageHeader';
+ import { ResourceState } from '../components/ResourceState';
+-interface Status { initialization_status: string; coverage_status: string; connection: { status: string; checked_at: string | null; app_id_masked: string | null; tenant_key_masked: string | null; scopes: string[] }; last_event_processed_at: string | null; failed_event_count: number }
++interface Status { initialization_status: string; coverage_status: string; last_full_sync_at: string | null; connection: { status: string; checked_at: string | null; app_id_masked: string | null; tenant_key_masked: string | null; scopes: string[] }; last_event_processed_at: string | null; failed_event_count: number }
+ interface SyncEvent { event_id: string; event_type: string; object_id: string | null; status: string; attempts: number; received_at: string; error_code: string | null }
+-const labels: Record<string,string> = { pending:'待处理', queued:'排队中', running:'执行中', succeeded:'成功', failed:'失败', complete:'已完成', incomplete:'未初始化', full:'全量', subtree:'部门及后代', reconcile:'每日核对', scopes:'权限范围', departments:'部门采集', employees:'员工采集', collected:'采集完成', published:'已发布', collection_failed:'采集失败', connected:'已连接', degraded:'连接待确认', unconfigured:'未配置', complete_coverage:'覆盖完整', unknown:'未知' };
++const labels: Record<string,string> = { pending:'待处理', queued:'排队中', running:'执行中', succeeded:'成功', failed:'失败', complete:'已完成', incomplete:'覆盖不完整', full:'全量', subtree:'部门及后代', reconcile:'每日核对', scopes:'权限范围', departments:'部门采集', employees:'员工采集', collected:'采集完成', published:'已发布', collection_failed:'采集失败', connected:'已连接', degraded:'连接待确认', unconfigured:'未配置', complete_coverage:'覆盖完整', unknown:'未知' };
+ const zh = (value?: string | null) => value ? labels[value] ?? value : '—';
+ export function SyncPage() {
+   const { message } = App.useApp(); const status = useResource<Status>('/admin/api/status'); const [jobFilter, setJobFilter] = useState<string>(); const [eventFilter, setEventFilter] = useState<string>('failed'); const jobs = useAllResource<SyncJob>('/admin/api/sync/jobs' + query({ status: jobFilter, limit: 100 })); const events = useAllResource<SyncEvent>('/admin/api/sync/events' + query({ status: eventFilter, limit: 100 })); const [detailId, setDetailId] = useState<string>(); const detail = useResource<SyncJob>(detailId ? `/admin/api/sync/jobs/${encodeURIComponent(detailId)}` : null); const [busy, setBusy] = useState(false);
++  const previousDetailStatus = useRef<string | undefined>(undefined);
+   useEffect(() => { const requested = new URLSearchParams(location.search).get('job'); if (requested) setDetailId(requested); }, []);
+   useEffect(() => { if (!detailId || !detail.data || !['queued','running'].includes(detail.data.status)) return; const timer = window.setInterval(detail.reload, 3000); return () => clearInterval(timer); }, [detailId, detail.data?.status, detail.reload]);
++  useEffect(() => { const next=detail.data?.status; const previous=previousDetailStatus.current; previousDetailStatus.current=next; if(previous&&['queued','running'].includes(previous)&&next&&!['queued','running'].includes(next)){jobs.reload();status.reload();events.reload();} }, [detail.data?.status, events.reload, jobs.reload, status.reload]);
+   async function create() { setBusy(true); try { const result = await request<{ job_id: string; reused?: boolean }>('/admin/api/sync/jobs', { method: 'POST', body: { type: 'full' } }); message.success(result.data.reused ? '已打开相同范围的活动任务' : '全量任务已创建'); setDetailId(result.data.job_id); jobs.reload(); } catch (error) { message.error(error instanceof Error ? error.message : '创建失败'); } finally { setBusy(false); } }
+   async function retryJob() { if (!detailId) return; setBusy(true); try { await request(`/admin/api/sync/jobs/${encodeURIComponent(detailId)}/retry`, { method: 'POST' }); message.success('重试任务已提交'); detail.reload(); jobs.reload(); } catch (error) { message.error(error instanceof Error ? error.message : '重试失败'); } finally { setBusy(false); } }
+   async function retryEvent(event: SyncEvent) { if (!event.object_id) { message.warning('事件缺少对象 ID，无法安全重试；每日核对仍会回查旧记录。'); return; } setBusy(true); try { await request(`/admin/api/sync/events/${encodeURIComponent(event.event_id)}/retry`, { method: 'POST' }); message.success('事件已重新排队'); events.reload(); status.reload(); } catch (error) { message.error(error instanceof Error ? error.message : '事件重试失败'); } finally { setBusy(false); } }
+   const current = status.data;
+-  return <><PageHeader title="同步中心" description="查看同步健康、任务与失败事件；失败时保留最后成功数据。" extra={<Button type="primary" icon={<ReloadOutlined />} loading={busy} onClick={create}>一键全量更新</Button>} /><ResourceState {...status}>{current && <><Row gutter={[16,16]}><Col xs={24} md={6}><Card><Statistic title="初始化状态" value={zh(current.initialization_status)} /></Card></Col><Col xs={24} md={6}><Card><Statistic title="覆盖状态" value={zh(current.coverage_status)} /></Card></Col><Col xs={24} md={6}><Card><Statistic title="飞书连接" value={zh(current.connection.status)} /></Card></Col><Col xs={24} md={6}><Card><Statistic title="失败事件" value={current.failed_event_count} /></Card></Col></Row><Card className="block-gap" title="连接摘要"><Descriptions items={[{ key:'checked', label:'最近连接证据', children:formatTime(current.connection.checked_at) }, { key:'event', label:'最近事件处理', children:formatTime(current.last_event_processed_at) }, { key:'app', label:'应用', children:current.connection.app_id_masked ?? '—' }, { key:'tenant', label:'租户', children:current.connection.tenant_key_masked ?? '—' }, { key:'scopes', label:'声明权限', span:'filled', children:current.connection.scopes?.join('、') || '—' }]} /></Card></>}</ResourceState><Card className="block-gap" title="最近任务" extra={<Select allowClear placeholder="全部状态" value={jobFilter} onChange={setJobFilter} options={['queued','running','succeeded','failed'].map(value => ({ value, label:zh(value) }))} />}><ResourceState {...jobs} empty={!jobs.data?.length}><Table rowKey={row => row.job_id ?? row.id ?? ''} dataSource={jobs.data ?? []} pagination={{ pageSize:20 }} scroll={{ x:850 }} columns={[{ title:'任务', render:(_,row)=>`#${row.job_id ?? row.id}` }, { title:'类型', dataIndex:'type', render:zh }, { title:'范围', dataIndex:'root_department_id', render:value=>value || '全企业' }, { title:'阶段', dataIndex:'phase', render:zh }, { title:'状态', dataIndex:'status', render:value=><Tag>{zh(value)}</Tag> }, { title:'尝试', dataIndex:'attempt', render:value=>value ?? '—' }, { title:'操作', render:(_,row)=><Button type="link" onClick={()=>setDetailId(row.job_id ?? row.id)}>详情</Button> }]} /></ResourceState></Card><Card className="block-gap" title="同步事件" extra={<Select value={eventFilter} onChange={setEventFilter} options={[{value:'failed',label:'失败事件'},{value:'pending',label:'待处理事件'},{value:'succeeded',label:'成功事件'}]} />}><ResourceState {...events} empty={!events.data?.length}><Table rowKey="event_id" dataSource={events.data ?? []} pagination={{pageSize:20}} scroll={{x:850}} columns={[{title:'事件',dataIndex:'event_id'},{title:'类型',dataIndex:'event_type'},{title:'对象',dataIndex:'object_id',render:value=>value??'缺少对象 ID'},{title:'状态',dataIndex:'status',render:zh},{title:'尝试',dataIndex:'attempts'},{title:'接收时间',dataIndex:'received_at',render:formatTime},{title:'错误',dataIndex:'error_code',render:value=>value??'—'},{title:'操作',render:(_,row)=><Button type="link" danger disabled={row.status!=='failed'} onClick={()=>retryEvent(row)}>{row.object_id?'重试':'不可重试'}</Button>}]} /></ResourceState></Card><Drawer title={`同步任务 #${detailId ?? ''}`} open={Boolean(detailId)} onClose={()=>setDetailId(undefined)} size={560} extra={detail.data?.status==='failed' && <Button danger loading={busy} onClick={retryJob}>重试</Button>}><ResourceState {...detail}>{detail.data && <Descriptions column={1} bordered items={[{key:'type',label:'类型',children:zh(detail.data.type)},{key:'status',label:'状态',children:zh(detail.data.status)},{key:'phase',label:'阶段',children:zh(detail.data.phase as string)},{key:'attempt',label:'尝试次数',children:String(detail.data.attempt ?? '—')},{key:'error',label:'错误码',children:String(detail.data.error_code ?? '—')},{key:'progress',label:'实际进度',children:<pre>{JSON.stringify(detail.data.progress,null,2)}</pre>}]} />}</ResourceState></Drawer></>;
++  return <><PageHeader title="同步中心" description="查看同步健康、任务与失败事件；失败时保留最后成功数据。" extra={<Button type="primary" icon={<ReloadOutlined />} loading={busy} onClick={create}>一键全量更新</Button>} /><ResourceState {...status}>{current && <><Row gutter={[16,16]}><Col xs={24} md={6}><Card><Statistic title="初始化状态" value={zh(current.initialization_status)} /></Card></Col><Col xs={24} md={6}><Card><Statistic title="覆盖状态" value={zh(current.coverage_status)} /></Card></Col><Col xs={24} md={6}><Card><Statistic title="飞书连接" value={zh(current.connection.status)} /></Card></Col><Col xs={24} md={6}><Card><Statistic title="失败事件" value={current.failed_event_count} /></Card></Col></Row><Card className="block-gap" title="连接摘要"><Descriptions items={[{ key:'full', label:'最后成功全量同步', children:formatTime(current.last_full_sync_at) }, { key:'checked', label:'最近连接证据', children:formatTime(current.connection.checked_at) }, { key:'event', label:'最近事件处理', children:formatTime(current.last_event_processed_at) }, { key:'app', label:'应用', children:current.connection.app_id_masked ?? '—' }, { key:'tenant', label:'租户', children:current.connection.tenant_key_masked ?? '—' }, { key:'scopes', label:'声明权限', span:'filled', children:current.connection.scopes?.join('、') || '—' }]} /></Card></>}</ResourceState><Card className="block-gap" title="最近任务" extra={<Select allowClear placeholder="全部状态" value={jobFilter} onChange={setJobFilter} options={['queued','running','succeeded','failed'].map(value => ({ value, label:zh(value) }))} />}><ResourceState {...jobs} empty={!jobs.data?.length}><Table rowKey={row => row.job_id ?? row.id ?? ''} dataSource={jobs.data ?? []} pagination={{ pageSize:20 }} scroll={{ x:850 }} columns={[{ title:'任务', render:(_,row)=>`#${row.job_id ?? row.id}` }, { title:'类型', dataIndex:'type', render:zh }, { title:'范围', dataIndex:'root_department_id', render:value=>value || '全企业' }, { title:'阶段', dataIndex:'phase', render:zh }, { title:'状态', dataIndex:'status', render:value=><Tag>{zh(value)}</Tag> }, { title:'尝试', dataIndex:'attempt', render:value=>value ?? '—' }, { title:'操作', render:(_,row)=><Button type="link" onClick={()=>setDetailId(row.job_id ?? row.id)}>详情</Button> }]} /></ResourceState></Card><Card className="block-gap" title="同步事件" extra={<Select value={eventFilter} onChange={setEventFilter} options={[{value:'failed',label:'失败事件'},{value:'queued',label:'待处理事件'},{value:'succeeded',label:'成功事件'}]} />}><ResourceState {...events} empty={!events.data?.length}><Table rowKey="event_id" dataSource={events.data ?? []} pagination={{pageSize:20}} scroll={{x:850}} columns={[{title:'事件',dataIndex:'event_id'},{title:'类型',dataIndex:'event_type'},{title:'对象',dataIndex:'object_id',render:value=>value??'缺少对象 ID'},{title:'状态',dataIndex:'status',render:zh},{title:'尝试',dataIndex:'attempts'},{title:'接收时间',dataIndex:'received_at',render:formatTime},{title:'错误',dataIndex:'error_code',render:value=>value??'—'},{title:'操作',render:(_,row)=><Button type="link" danger disabled={row.status!=='failed'} onClick={()=>retryEvent(row)}>{row.object_id?'重试':'不可重试'}</Button>}]} /></ResourceState></Card><Drawer title={`同步任务 #${detailId ?? ''}`} open={Boolean(detailId)} onClose={()=>setDetailId(undefined)} size={560} extra={detail.data?.status==='failed' && <Button danger loading={busy} onClick={retryJob}>重试</Button>}><ResourceState {...detail}>{detail.data && <Descriptions column={1} bordered items={[{key:'type',label:'类型',children:zh(detail.data.type)},{key:'status',label:'状态',children:zh(detail.data.status)},{key:'phase',label:'阶段',children:zh(detail.data.phase as string)},{key:'attempt',label:'尝试次数',children:String(detail.data.attempt ?? '—')},{key:'error',label:'错误码',children:String(detail.data.error_code ?? '—')},{key:'progress',label:'实际进度',children:<pre>{JSON.stringify(detail.data.progress,null,2)}</pre>}]} />}</ResourceState></Drawer></>;
+ }
+ 
+ ```
+@@ -592,9 +660,15 @@
+ .tree-trigger { display: none; }
+ .tree-hit { color: #1677ff; font-weight: 600; }
+ .store-change { padding: 16px 0; border-bottom: 1px solid #e7eaf0; }
++html, body, #root, .app-shell, .app-shell > .ant-layout { max-width: 100%; overflow-x: hidden; }
++.ant-layout-content, .org-grid, .org-grid > *, .ant-card { min-width: 0; }
++.ant-table-wrapper { max-width: 100%; }
+ @media (max-width: 900px) {
+   .tree-trigger { display: inline-flex; }
+   .tree-panel { display: none; }
++  .ant-card-head-wrapper { align-items: flex-start; flex-wrap: wrap; gap: 8px; }
++  .ant-card-extra { margin-inline-start: 0; max-width: 100%; }
++  .ant-card-extra .ant-space { flex-wrap: wrap; }
+ }
+ 
+ ```
+@@ -738,6 +812,9 @@
+   vi.stubGlobal('fetch', async () => Response.json({ data: [1], meta: { dataset_epoch: 'e1', data_version: 1, next_cursor: 'same' } }));
+   await expect(readAll('/items')).rejects.toMatchObject({ code: 'INVALID_PAGINATION' });
+ });
++it('外部固定版本冲突时立即交给父子协调层，不重复旧基准', async () => {
++  const fetcher=vi.fn(async()=>Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409})); vi.stubGlobal('fetch',fetcher); await expect(readAll('/admin/api/employees?dataset_epoch=e&data_version=1')).rejects.toMatchObject({code:'DATASET_CHANGED'}); expect(fetcher).toHaveBeenCalledOnce();
++});
+ 
+ ```
+ 
+@@ -747,6 +824,8 @@
+ 
+ /** 组织树需要完整部门集；版本冲突时整轮重读，绝不拼接两代数据。 */
+ export async function readAll<T>(path: string, signal?: AbortSignal): Promise<Envelope<T[]>> {
++  const initialUrl = new URL(path, 'http://same-origin');
++  const externallyBound = initialUrl.searchParams.has('dataset_epoch') || initialUrl.searchParams.has('data_version');
+   for (let attempt = 0; attempt < 3; attempt++) {
+     const data: T[] = [];
+     const seen = new Set<string>();
+@@ -775,7 +854,7 @@
+       } while (cursor);
+       return { data, meta };
+     } catch (error) {
+-      if (!(error instanceof ApiError) || error.code !== 'DATASET_CHANGED' || attempt === 2) throw error;
++      if (!(error instanceof ApiError) || error.code !== 'DATASET_CHANGED' || externallyBound || attempt === 2) throw error;
+     }
+   }
+   throw new ApiError(409, 'DATASET_CHANGED', '数据持续变化，请稍后重试');

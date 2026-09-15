@@ -1,0 +1,8 @@
+import { App } from 'antd';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { StoresPage } from './StoresPage';
+const store={id:'s1',department_id:'s1',parent_id:null,name:'一店',path:['一店'],status:'active',is_virtual_root:false,is_store:true,store_code:'S1',notes:null,employee_count:1,primary_employee_count:1};
+beforeEach(()=>{vi.stubGlobal('matchMedia',()=>({matches:false,addListener:vi.fn(),removeListener:vi.fn(),addEventListener:vi.fn(),removeEventListener:vi.fn()}));vi.stubGlobal('ResizeObserver',class{observe(){}unobserve(){}disconnect(){}})}); afterEach(()=>vi.unstubAllGlobals());
+it('门店员工首次409立即重读父版本且从不发无版本请求',async()=>{let parentReads=0;let childReads=0;const childUrls:string[]=[];vi.stubGlobal('fetch',async(url:string)=>{if(url.includes('/employees')){childReads++;childUrls.push(url);if(childReads===1)return Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409});return Response.json({data:[],meta:{dataset_epoch:'e',data_version:2,next_cursor:null}})}parentReads++;return Response.json({data:[store],meta:{dataset_epoch:'e',data_version:parentReads,next_cursor:null}})});render(<App><StoresPage/></App>);await userEvent.click(await screen.findByRole('button',{name:'查看员工'}));await waitFor(()=>expect(parentReads).toBe(2));await waitFor(()=>expect(childReads).toBe(2));expect(childUrls.every(url=>url.includes('dataset_epoch=e')&&url.includes('data_version='))).toBe(true)});

@@ -1,0 +1,19 @@
+name: organization-tests
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: organization_test
+      MYSQL_USER: organization_test
+      MYSQL_PASSWORD: local-integration-only
+      MYSQL_ROOT_PASSWORD: local-root-integration-only
+    ports:
+      - "127.0.0.1:13306:3306"
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_as_cs"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    tmpfs:
+      - /var/lib/mysql

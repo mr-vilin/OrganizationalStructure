@@ -1,0 +1,891 @@
+--- task-1-original
+
++++ task-1-fix-1
+
+@@ -46,31 +46,32 @@
+
+ 
+ ## backend/app/admin/__init__.py
+ ```
+ 
+ 
+ ```
+ 
+ ## backend/app/admin/router.py
+ ```
+ from datetime import datetime, timezone
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Query
+-from pydantic import BaseModel, Field
++from pydantic import BaseModel, Field, field_validator
+ from sqlalchemy import select, update
+ 
+ from app.dependencies import Runtime, get_admin_identity, get_runtime, require_admin_write
+ from app.persistence.models import AdminAllowlist, AdminSession, ApiClient, ChangeLog, StoreProfile
+-from app.stores.domain import InvalidStoreChanges, StorePatch
++from app.stores.domain import UNSET, InvalidStoreChanges, StorePatch
+ from app.stores.service import StoreAdminService
++from app.web import utc_datetime
+ 
+ 
+ router = APIRouter(prefix="/admin/api")
+ 
+ 
+ @router.get("/status")
+ def admin_status(identity=Depends(get_admin_identity), runtime: Runtime = Depends(get_runtime)):
+     data, meta = runtime.reads.status()
+     return {"data": data, "meta": meta}
+ 
+ 
+ @router.get("/departments")
+@@ -106,38 +107,49 @@
+
+     data, meta = runtime.reads.list_stores(include_inactive=include_inactive, limit=limit, cursor=cursor, dataset_epoch=dataset_epoch, data_version=data_version)
+     return {"data": data, "meta": meta}
+ 
+ 
+ @router.get("/stores/{store_id}")
+ def admin_store(store_id: str, identity=Depends(get_admin_identity), runtime: Runtime = Depends(get_runtime)):
+     data, meta = runtime.reads.get_store(store_id)
+     if data is None:
+         raise HTTPException(404, {"code": "STORE_NOT_FOUND", "message": "门店不存在"})
+     return {"data": data, "meta": meta}
+ 
+ 
++@router.get("/stores/{store_id}/employees")
++def admin_store_employees(store_id: str, membership: str = Query("all", pattern="^(all|primary)$"), include_inactive: bool = False, limit: int = Query(100, ge=1, le=500), cursor: str | None = None, dataset_epoch: str | None = None, data_version: int | None = None, identity=Depends(get_admin_identity), runtime: Runtime = Depends(get_runtime)):
++    data, meta = runtime.reads.list_store_employees(store_id, membership=membership, include_inactive=include_inactive, limit=limit, cursor=cursor, dataset_epoch=dataset_epoch, data_version=data_version)
++    return {"data": data, "meta": meta}
++
++
+ class StoreChange(BaseModel):
+-    department_id: str
++    department_id: str = Field(min_length=1, max_length=191)
+     is_store: bool
+     store_code: str | None = Field(default=None, max_length=128)
+     notes: str | None = None
+ 
+ 
+ class StoreBatch(BaseModel):
+     data_version: int
+     changes: list[StoreChange] = Field(min_length=1, max_length=500)
+ 
+ 
+ def _patches(body: StoreBatch) -> list[StorePatch]:
+-    return [StorePatch(**change.model_dump()) for change in body.changes]
++    return [StorePatch(
++        department_id=change.department_id,
++        is_store=change.is_store,
++        store_code=change.store_code if "store_code" in change.model_fields_set else UNSET,
++        notes=change.notes if "notes" in change.model_fields_set else UNSET,
++    ) for change in body.changes]
+ 
+ 
+ def _store_error(exc: InvalidStoreChanges):
+     raise HTTPException(422, {"code": "INVALID_STORE_CHANGES", "message": "门店修改无效", "fields": [error.__dict__ for error in exc.errors]})
+ 
+ 
+ @router.post("/stores/batch/preview")
+ def preview_stores(body: StoreBatch, authorization=Depends(require_admin_write), runtime: Runtime = Depends(get_runtime)):
+     try:
+         data = StoreAdminService(runtime.sessions).preview(_patches(body), body.data_version)
+     except InvalidStoreChanges as exc:
+         _store_error(exc)
+@@ -163,93 +175,105 @@
+
+ 
+ @router.get("/change-logs")
+ def change_logs(object_type: str | None = None, object_id: str | None = None, source: str | None = None, job_id: str | None = None, limit: int = Query(100, ge=1, le=500), cursor: int | None = None, identity=Depends(get_admin_identity), runtime: Runtime = Depends(get_runtime)):
+     with runtime.sessions() as db:
+         stmt = select(ChangeLog).order_by(ChangeLog.id.desc()).limit(limit + 1)
+         for column, value in ((ChangeLog.object_type, object_type), (ChangeLog.object_id, object_id), (ChangeLog.source, source), (ChangeLog.job_id, job_id)):
+             if value is not None:
+                 stmt = stmt.where(column == value)
+         if cursor is not None:
+             stmt = stmt.where(ChangeLog.id < cursor)
+         rows = list(db.scalars(stmt))
+         page = rows[:limit]
+-        data = [{"id": row.id, "object_type": row.object_type, "object_id": row.object_id, "source": row.source, "actor": row.actor, "job_id": row.job_id, "before": row.before_data, "after": row.after_data, "committed_at": row.committed_at} for row in page]
++        data = [{"id": row.id, "object_type": row.object_type, "object_id": row.object_id, "source": row.source, "actor": row.actor, "job_id": row.job_id, "before": row.before_data, "after": row.after_data, "committed_at": utc_datetime(row.committed_at)} for row in page]
+         return {"data": data, "meta": {"next_cursor": page[-1].id if len(rows) > limit else None}}
+ 
+ 
+ class AllowlistEntry(BaseModel):
+-    open_id: str
++    open_id: str = Field(min_length=1, max_length=191)
++
++    @field_validator("open_id")
++    @classmethod
++    def normalized_open_id(cls, value: str) -> str:
++        value = value.strip()
++        if not value:
++            raise ValueError("open_id 不能为空")
++        return value
+ 
+ 
+ @router.get("/admin-allowlist")
+ def list_allowlist(identity=Depends(get_admin_identity), runtime: Runtime = Depends(get_runtime)):
+     with runtime.sessions() as db:
+         rows = list(db.scalars(select(AdminAllowlist).order_by(AdminAllowlist.open_id)))
+-        return {"data": [{"open_id": row.open_id, "created_at": row.created_at} for row in rows], "meta": {}}
++        return {"data": [{"open_id": row.open_id, "created_at": utc_datetime(row.created_at)} for row in rows], "meta": {}}
+ 
+ 
+ @router.post("/admin-allowlist", status_code=201)
+ def add_allowlist(body: AllowlistEntry, authorization=Depends(require_admin_write), runtime: Runtime = Depends(get_runtime)):
+     now = datetime.now(timezone.utc).replace(tzinfo=None)
+-    with runtime.sessions.begin() as db:
+-        if db.get(AdminAllowlist, body.open_id) is None:
+-            db.add(AdminAllowlist(open_id=body.open_id, created_at=now))
+-    return {"data": {"open_id": body.open_id, "created_at": now}, "meta": {}}
++    identity, _ = authorization
++    runtime.identities.add_admin(body.open_id, f"admin:{identity.open_id}", now)
++    return {"data": {"open_id": body.open_id, "created_at": utc_datetime(now)}, "meta": {}}
+ 
+ 
+ @router.delete("/admin-allowlist/{open_id}")
+ def delete_allowlist(open_id: str, authorization=Depends(require_admin_write), runtime: Runtime = Depends(get_runtime)):
+     now = datetime.now(timezone.utc).replace(tzinfo=None)
+-    with runtime.sessions.begin() as db:
+-        record = db.get(AdminAllowlist, open_id)
+-        if record is None:
+-            raise HTTPException(404, {"code": "ADMIN_NOT_FOUND", "message": "管理员不在白名单中"})
+-        db.execute(update(AdminSession).where(AdminSession.open_id == open_id, AdminSession.revoked_at.is_(None)).values(revoked_at=now))
+-        db.delete(record)
++    identity, _ = authorization
++    if not runtime.identities.remove_admin(open_id, f"admin:{identity.open_id}", now):
++        raise HTTPException(404, {"code": "ADMIN_NOT_FOUND", "message": "管理员不在白名单中"})
+     return {"data": {"open_id": open_id, "deleted": True}, "meta": {}}
+ 
+ 
+ class ClientCreate(BaseModel):
+     name: str = Field(min_length=1, max_length=255)
++
++    @field_validator("name")
++    @classmethod
++    def normalized_name(cls, value: str) -> str:
++        value = value.strip()
++        if not value:
++            raise ValueError("name 不能为空")
++        return value
+ 
+ 
+ @router.get("/api-clients")
+ def list_clients(identity=Depends(get_admin_identity), runtime: Runtime = Depends(get_runtime)):
+     with runtime.sessions() as db:
+         rows = list(db.scalars(select(ApiClient).order_by(ApiClient.created_at, ApiClient.id)))
+-        return {"data": [{"client_id": row.id, "name": row.name, "created_at": row.created_at, "revoked_at": row.revoked_at} for row in rows], "meta": {}}
++        return {"data": [{"client_id": row.id, "name": row.name, "created_at": utc_datetime(row.created_at), "revoked_at": utc_datetime(row.revoked_at)} for row in rows], "meta": {}}
+ 
+ 
+ @router.post("/api-clients", status_code=201)
+ def create_client(body: ClientCreate, authorization=Depends(require_admin_write), runtime: Runtime = Depends(get_runtime)):
+-    record, secret = runtime.identities.issue_api_key(body.name, datetime.now(timezone.utc).replace(tzinfo=None))
+-    return {"data": {"client_id": record.id, "name": record.name, "secret": secret, "created_at": record.created_at}, "meta": {"secret_shown_once": True}}
++    identity, _ = authorization
++    record, secret = runtime.identities.create_api_key(body.name, f"admin:{identity.open_id}", datetime.now(timezone.utc).replace(tzinfo=None))
++    return {"data": {"client_id": record.id, "name": record.name, "secret": secret, "created_at": utc_datetime(record.created_at)}, "meta": {"secret_shown_once": True}}
+ 
+ 
+ @router.post("/api-clients/{client_id}/rotate")
+ def rotate_client(client_id: str, authorization=Depends(require_admin_write), runtime: Runtime = Depends(get_runtime)):
+     now = datetime.now(timezone.utc).replace(tzinfo=None)
+-    with runtime.sessions() as db:
+-        previous = db.get(ApiClient, client_id)
+-        if previous is None:
+-            raise HTTPException(404, {"code": "API_CLIENT_NOT_FOUND", "message": "API 客户端不存在"})
+-        name = previous.name
+-    runtime.identities.revoke_api_key(client_id, now)
+-    record, secret = runtime.identities.issue_api_key(name, now)
+-    return {"data": {"client_id": record.id, "name": record.name, "secret": secret, "created_at": record.created_at}, "meta": {"secret_shown_once": True, "replaces_client_id": client_id}}
++    identity, _ = authorization
++    result = runtime.identities.rotate_api_key(client_id, f"admin:{identity.open_id}", now)
++    if result is None:
++        raise HTTPException(404, {"code": "API_CLIENT_NOT_FOUND", "message": "API 客户端不存在或已撤销"})
++    record, secret = result
++    return {"data": {"client_id": record.id, "name": record.name, "secret": secret, "created_at": utc_datetime(record.created_at)}, "meta": {"secret_shown_once": True, "replaces_client_id": client_id}}
+ 
+ 
+ @router.post("/api-clients/{client_id}/revoke")
+ def revoke_client(client_id: str, authorization=Depends(require_admin_write), runtime: Runtime = Depends(get_runtime)):
+-    if not runtime.identities.revoke_api_key(client_id, datetime.now(timezone.utc).replace(tzinfo=None)):
++    identity, _ = authorization
++    if not runtime.identities.revoke_api_key_audited(client_id, f"admin:{identity.open_id}", datetime.now(timezone.utc).replace(tzinfo=None)):
+         raise HTTPException(404, {"code": "API_CLIENT_NOT_FOUND", "message": "API 客户端不存在"})
+     return {"data": {"client_id": client_id, "revoked": True}, "meta": {}}
+ 
+ ```
+ 
+ ## backend/app/config.py
+ ```
+ from functools import lru_cache
+ 
+ from pydantic import SecretStr
+ from pydantic_settings import BaseSettings, SettingsConfigDict
+ 
+@@ -627,24 +651,26 @@
+
+     fields = [{"loc": item.get("loc"), "type": item.get("type"), "msg": item.get("msg")} for item in exc.errors()]
+     return error("VALIDATION_ERROR", "请求参数无效", 422, fields=fields)
+ 
+ 
+ @app.exception_handler(RuntimeError)
+ async def runtime_error_handler(request: Request, exc: RuntimeError):
+     if str(exc) == "INITIALIZATION_INCOMPLETE":
+         return error("INITIALIZATION_INCOMPLETE", "组织数据尚未完成初始化", 503)
+     if str(exc) == "DATASET_CHANGED":
+         return error("DATASET_CHANGED", "读取期间数据版本已变化，请重新开始分页", 409)
+     if str(exc) == "INVALID_CURSOR":
+         return error("INVALID_CURSOR", "分页游标无效或与筛选条件不匹配", 400)
++    if str(exc) == "DATABASE_SCHEMA_INCOMPLETE":
++        return error("DATABASE_SCHEMA_INCOMPLETE", "数据库迁移或系统单例种子不完整", 503)
+     return error("INTERNAL_ERROR", "服务暂时不可用", 500)
+ 
+ 
+ @app.get("/health/live")
+ def live():
+     return {"data": {"status": "ok"}, "meta": {}}
+ 
+ 
+ @app.get("/health/ready")
+ def ready(runtime: Runtime | None = Depends(get_runtime)):
+     if runtime is None:
+         raise HTTPException(503, {"code": "DATABASE_NOT_CONFIGURED", "message": "数据库尚未配置"})
+@@ -715,53 +741,64 @@
+
+     return _list("list_stores", service, include_inactive=include_inactive, limit=limit, cursor=cursor, dataset_epoch=dataset_epoch, data_version=data_version)
+ 
+ 
+ @app.get("/api/v1/stores/{store_id}")
+ def store(store_id: str, identity=Depends(get_public_identity), service: ReadService = Depends(get_read_service)):
+     data, meta = service.get_store(store_id)
+     if data is None:
+         raise HTTPException(404, {"code": "STORE_NOT_FOUND", "message": "门店不存在"})
+     return {"data": data, "meta": meta}
+ 
+ 
+ @app.get("/api/v1/stores/{store_id}/employees")
+-def store_employees(store_id: str, membership: str = Query("all", pattern="^(all|primary)$"), include_inactive: bool = False, limit: int = Query(100, ge=1, le=500), cursor: str | None = None, identity=Depends(get_public_identity), service: ReadService = Depends(get_read_service)):
+-    return _list("list_store_employees", service, store_id=store_id, membership=membership, include_inactive=include_inactive, limit=limit, cursor=cursor)
++def store_employees(store_id: str, membership: str = Query("all", pattern="^(all|primary)$"), include_inactive: bool = False, limit: int = Query(100, ge=1, le=500), cursor: str | None = None, dataset_epoch: str | None = None, data_version: int | None = None, identity=Depends(get_public_identity), service: ReadService = Depends(get_read_service)):
++    return _list("list_store_employees", service, store_id=store_id, membership=membership, include_inactive=include_inactive, limit=limit, cursor=cursor, dataset_epoch=dataset_epoch, data_version=data_version)
+ 
+ 
+ class JobRequest(BaseModel):
+     type: str
+     root_department_id: str | None = None
+ 
+ 
+ @app.post("/admin/api/sync/jobs", status_code=202)
+ def submit_job(body: JobRequest, authorization=Depends(require_admin_write), runtime: Runtime | None = Depends(get_runtime)):
+     from datetime import datetime, timezone
+     if body.type not in {"full", "subtree", "reconcile"} or (body.type == "subtree" and not body.root_department_id):
+         raise HTTPException(422, {"code": "INVALID_JOB_SCOPE", "message": "同步任务类型或范围无效"})
+     identity, _ = authorization
+     job, reused = runtime.jobs.submit(body.type, body.root_department_id, f"admin:{identity.open_id}", datetime.now(timezone.utc))
+     return {"data": {"job_id": job.id, "status": job.status, "reused": reused}, "meta": {}}
+ 
+ 
+ @app.get("/admin/api/sync/jobs")
+-def list_jobs(limit: int = Query(100, ge=1, le=500), status: str | None = None, identity=Depends(get_admin_identity), runtime: Runtime | None = Depends(get_runtime)):
++def list_jobs(limit: int = Query(100, ge=1, le=500), status: str | None = None, cursor: str | None = None, identity=Depends(get_admin_identity), runtime: Runtime | None = Depends(get_runtime)):
+     from sqlalchemy import select
+     from .persistence.models import SyncJob
+     with runtime.sessions() as db:
+         stmt = select(SyncJob).order_by(SyncJob.created_at.desc(), SyncJob.id.desc()).limit(limit)
+         if status:
+             stmt = stmt.where(SyncJob.status == status)
+-        rows = list(db.scalars(stmt))
+-        return {"data": [{"job_id": job.id, "type": job.type, "root_department_id": job.root_department_id, "status": job.status, "phase": job.phase, "attempt": job.attempt, "error_code": job.error_code, "created_at": job.created_at, "updated_at": job.updated_at} for job in rows], "meta": {}}
++        if cursor:
++            try:
++                cursor_time, cursor_id = cursor.split("|", 1)
++                boundary = datetime.fromisoformat(cursor_time)
++            except ValueError:
++                raise HTTPException(400, {"code": "INVALID_CURSOR", "message": "任务游标无效"})
++            from sqlalchemy import or_, and_
++            stmt = stmt.where(or_(SyncJob.created_at < boundary, and_(SyncJob.created_at == boundary, SyncJob.id < cursor_id)))
++        rows = list(db.scalars(stmt.limit(limit + 1)))
++        page = rows[:limit]
++        from .web import utc_datetime
++        next_cursor = f"{page[-1].created_at.isoformat()}|{page[-1].id}" if len(rows) > limit else None
++        return {"data": [{"job_id": job.id, "type": job.type, "root_department_id": job.root_department_id, "status": job.status, "phase": job.phase, "attempt": job.attempt, "error_code": job.error_code, "created_at": utc_datetime(job.created_at), "updated_at": utc_datetime(job.updated_at)} for job in page], "meta": {"next_cursor": next_cursor}}
+ 
+ 
+ @app.get("/admin/api/sync/jobs/{job_id}")
+ def get_job(job_id: str, identity=Depends(get_admin_identity), runtime: Runtime | None = Depends(get_runtime)):
+     from sqlalchemy.orm import Session
+     from .persistence.models import SyncJob
+     with runtime.sessions() as db:
+         job = db.get(SyncJob, job_id)
+         if job is None:
+             raise HTTPException(404, {"code": "JOB_NOT_FOUND", "message": "同步任务不存在"})
+         return {"data": {"job_id": job.id, "type": job.type, "root_department_id": job.root_department_id, "status": job.status, "phase": job.phase, "attempt": job.attempt, "error_code": job.error_code}, "meta": {}}
+ 
+@@ -997,46 +1034,47 @@
+
+     committed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+     __table_args__ = TABLE_ARGS
+ 
+ ```
+ 
+ ## backend/app/persistence/read_service.py
+ ```
+ from sqlalchemy import func, select
+ from sqlalchemy.orm import Session, sessionmaker
+ 
+ from app.services import ReadService
+ from app.public_api.cursor import CursorCodec, DatasetChanged, InvalidCursor
++from app.web import utc_datetime
+ 
+ from .models import DatasetState, Department, Employee, EmployeeDepartment, EmployeeStore, StoreProfile
+ 
+ 
+ class SqlReadService(ReadService):
+     def __init__(self, sessions: sessionmaker[Session], cursor_secret: str):
+         self._sessions = sessions
+         self._cursors = CursorCodec(cursor_secret)
+ 
+     def _state(self, db: Session) -> DatasetState:
+         state = db.get(DatasetState, 1)
+         if state is None or state.initialization_status != "complete":
+             raise RuntimeError("INITIALIZATION_INCOMPLETE")
+         return state
+ 
+     @staticmethod
+     def _meta(state: DatasetState, next_cursor: str | None = None) -> dict:
+         return {
+             "dataset_epoch": state.dataset_epoch,
+             "data_version": state.data_version,
+             "coverage_status": state.coverage_status,
+-            "last_full_sync_at": state.last_full_sync_at,
++            "last_full_sync_at": utc_datetime(state.last_full_sync_at),
+             "next_cursor": next_cursor,
+         }
+ 
+     def status(self):
+         with self._sessions() as db, db.begin():
+             state = self._state(db)
+             return ({"initialization_status": state.initialization_status, "coverage_status": state.coverage_status}, self._meta(state))
+ 
+     def list_departments(self, **filters):
+         with self._sessions() as db, db.begin():
+             state = self._state(db)
+             self._check_version(state, filters)
+@@ -1186,49 +1224,50 @@
+
+ 
+ ## backend/app/persistence/repositories.py
+ ```
+ import hashlib
+ import hmac
+ import secrets
+ from datetime import datetime, timezone
+ 
+ from sqlalchemy import and_, select
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import Session, sessionmaker
+ 
+-from .models import AdminAllowlist, AdminSession, ApiClient, DatasetState, SyncJob, SystemSetting
++from .models import AdminAllowlist, AdminSession, ApiClient, ChangeLog, DatasetState, SyncJob, SystemSetting
+ 
+ 
+ class SqlIdentityRepository:
+     """每次认证均读取数据库，使撤销与白名单修改立即生效。"""
+ 
+     def __init__(self, sessions: sessionmaker[Session], pepper: str):
+         self._sessions = sessions
+         self._pepper = pepper.encode()
+ 
+     def authenticate_api_key(self, client_id: str, secret: str) -> ApiClient | None:
+         with self._sessions() as db:
+             record = db.get(ApiClient, client_id)
+             if record is None or record.revoked_at is not None:
+                 return None
+             return record if hmac.compare_digest(record.secret_hash, self._hash(secret)) else None
+ 
+     def authenticate_session(self, session_id: str, now: datetime) -> AdminSession | None:
+         with self._sessions() as db:
+-            statement = select(AdminSession).join(AdminAllowlist).where(
+-                AdminSession.id == session_id,
+-                AdminSession.revoked_at.is_(None),
+-                AdminSession.expires_at > now,
+-            )
+-            return db.scalar(statement)
++            return db.scalar(self.session_auth_statement(session_id, now))
++
++    @staticmethod
++    def session_auth_statement(session_id: str, now: datetime):
++        return select(AdminSession).join(
++            AdminAllowlist, AdminAllowlist.open_id == AdminSession.open_id
++        ).where(AdminSession.id == session_id, AdminSession.revoked_at.is_(None), AdminSession.expires_at > now)
+ 
+     def create_session(self, open_id: str, csrf_token: str, expires_at: datetime, now: datetime) -> AdminSession | None:
+         """供 OAuth 适配器在换取并核实 open_id 后建立可撤销会话。"""
+         with self._sessions.begin() as db:
+             if db.get(AdminAllowlist, open_id) is None:
+                 return None
+             record = AdminSession(id=secrets.token_urlsafe(32), open_id=open_id, csrf_hash=self._hmac(csrf_token), expires_at=expires_at)
+             db.add(record)
+             return record
+ 
+     def revoke_session(self, session_id: str, now: datetime) -> bool:
+         with self._sessions.begin() as db:
+@@ -1255,42 +1294,92 @@
+
+         with self._sessions.begin() as db:
+             db.add(record)
+         return record, secret
+ 
+     def revoke_api_key(self, client_id: str, now: datetime) -> bool:
+         with self._sessions.begin() as db:
+             record = db.get(ApiClient, client_id)
+             if record is None:
+                 return False
+             record.revoked_at = now
+         return True
+ 
++    def create_api_key(self, name: str, actor: str, now: datetime) -> tuple[ApiClient, str]:
++        secret = secrets.token_urlsafe(32)
++        record = ApiClient(id=secrets.token_urlsafe(12), name=name, secret_hash=self._hash(secret), created_at=now)
++        with self._sessions.begin() as db:
++            db.add(record)
++            db.add(ChangeLog(object_type="api_client", object_id=record.id, source="admin", actor=actor, before_data=None, after_data={"name": name, "revoked": False}, committed_at=now))
++        return record, secret
++
++    def rotate_api_key(self, client_id: str, actor: str, now: datetime) -> tuple[ApiClient, str] | None:
++        secret = secrets.token_urlsafe(32)
++        with self._sessions.begin() as db:
++            previous = db.scalar(select(ApiClient).where(ApiClient.id == client_id).with_for_update())
++            if previous is None or previous.revoked_at is not None:
++                return None
++            replacement = ApiClient(id=secrets.token_urlsafe(12), name=previous.name, secret_hash=self._hash(secret), created_at=now)
++            previous.revoked_at = now
++            db.add(replacement)
++            db.add(ChangeLog(object_type="api_client", object_id=client_id, source="admin", actor=actor, before_data={"name": previous.name, "revoked": False}, after_data={"name": previous.name, "revoked": True, "replacement_client_id": replacement.id}, committed_at=now))
++            return replacement, secret
++
++    def revoke_api_key_audited(self, client_id: str, actor: str, now: datetime) -> bool:
++        with self._sessions.begin() as db:
++            record = db.scalar(select(ApiClient).where(ApiClient.id == client_id).with_for_update())
++            if record is None:
++                return False
++            if record.revoked_at is None:
++                record.revoked_at = now
++                db.add(ChangeLog(object_type="api_client", object_id=client_id, source="admin", actor=actor, before_data={"name": record.name, "revoked": False}, after_data={"name": record.name, "revoked": True}, committed_at=now))
++            return True
++
++    def add_admin(self, open_id: str, actor: str, now: datetime) -> bool:
++        with self._sessions.begin() as db:
++            if db.get(AdminAllowlist, open_id) is not None:
++                return False
++            db.add(AdminAllowlist(open_id=open_id, created_at=now))
++            db.add(ChangeLog(object_type="admin_allowlist", object_id=open_id, source="admin", actor=actor, before_data=None, after_data={"enabled": True}, committed_at=now))
++            return True
++
++    def remove_admin(self, open_id: str, actor: str, now: datetime) -> bool:
++        with self._sessions.begin() as db:
++            record = db.scalar(select(AdminAllowlist).where(AdminAllowlist.open_id == open_id).with_for_update())
++            if record is None:
++                return False
++            db.query(AdminSession).filter(AdminSession.open_id == open_id, AdminSession.revoked_at.is_(None)).update({AdminSession.revoked_at: now}, synchronize_session=False)
++            db.add(ChangeLog(object_type="admin_allowlist", object_id=open_id, source="admin", actor=actor, before_data={"enabled": True}, after_data={"enabled": False}, committed_at=now))
++            db.delete(record)
++            return True
++
+     def _hash(self, secret: str) -> str:
+         return hashlib.scrypt(secret.encode(), salt=hashlib.sha256(self._pepper).digest(), n=2**14, r=8, p=1).hex()
+ 
+     def _hmac(self, value: str) -> str:
+         return hmac.new(self._pepper, value.encode(), hashlib.sha256).hexdigest()
+ 
+ 
+ class SqlSyncJobRepository:
+     """使用 MySQL 行锁实现任务复用、认领和重试。"""
+ 
+     ACTIVE = ("queued", "running")
+ 
+     def __init__(self, sessions: sessionmaker[Session]):
+         self._sessions = sessions
+ 
+     def submit(self, job_type: str, root_department_id: str | None, requested_by: str, now: datetime) -> tuple[SyncJob, bool]:
+         with self._sessions.begin() as db:
+-            db.scalar(select(DatasetState).where(DatasetState.id == 1).with_for_update())
++            lock_row = db.scalar(select(SystemSetting).where(SystemSetting.key == "task_queue_lock").with_for_update())
++            if lock_row is None:
++                raise RuntimeError("DATABASE_SCHEMA_INCOMPLETE")
+             existing = db.scalar(
+                 select(SyncJob).where(
+                     SyncJob.type == job_type,
+                     SyncJob.root_department_id.is_(None) if root_department_id is None else SyncJob.root_department_id == root_department_id,
+                     SyncJob.status.in_(self.ACTIVE),
+                 ).with_for_update()
+             )
+             if existing is not None:
+                 return existing, True
+             job = SyncJob(
+                 id=secrets.token_urlsafe(12), type=job_type, root_department_id=root_department_id,
+                 requested_by=requested_by, status="queued", attempt=1, lease_generation=0,
+@@ -1427,132 +1516,159 @@
+
+ from .domain import StorePatch, validate_store_changes
+ 
+ __all__ = ["StorePatch", "validate_store_changes"]
+ 
+ 
+ ```
+ 
+ ## backend/app/stores/domain.py
+ ```
+ from dataclasses import dataclass, replace
+ 
+ 
++UNSET = object()
++
++
+ @dataclass(frozen=True)
+ class StorePatch:
+     department_id: str
+     is_store: bool
+-    store_code: str | None = None
+-    notes: str | None = None
++    store_code: str | None | object = UNSET
++    notes: str | None | object = UNSET
+ 
+ 
+ @dataclass(frozen=True)
+ class StoreValidationError:
+     department_id: str
+     code: str
+     message: str
+ 
+ 
+ class InvalidStoreChanges(ValueError):
+     def __init__(self, errors: list[StoreValidationError]):
+         self.errors = errors
+         super().__init__("invalid store changes")
+ 
+ 
+ def validate_store_changes(changes: list[StorePatch], *, departments: dict[str, dict], raise_errors: bool = True):
+     normalized: list[StorePatch] = []
+     errors: list[StoreValidationError] = []
+     seen_codes: set[str] = set()
+     for change in changes:
+         department = departments.get(change.department_id)
+-        code = change.store_code.strip() if change.store_code and change.store_code.strip() else None
++        code = change.store_code
++        if code is not UNSET:
++            code = code.strip() if code and code.strip() else None
+         item = replace(change, store_code=code)
+         if department is None:
+             errors.append(StoreValidationError(change.department_id, "DEPARTMENT_NOT_FOUND", "部门不存在"))
+         elif change.is_store and department["is_virtual_root"]:
+             errors.append(StoreValidationError(change.department_id, "VIRTUAL_ROOT", "虚拟根不能设为门店"))
+         elif change.is_store and department["status"] != "active":
+             errors.append(StoreValidationError(change.department_id, "DEPARTMENT_INACTIVE", "失效部门不能新设为门店"))
+-        elif code is not None and code in seen_codes:
++        elif code is not UNSET and code is not None and code in seen_codes:
+             errors.append(StoreValidationError(change.department_id, "DUPLICATE_STORE_CODE", "批次内门店编码重复"))
+         else:
+-            if code is not None:
++            if code is not UNSET and code is not None:
+                 seen_codes.add(code)
+             normalized.append(item)
+     if errors and raise_errors:
+         raise InvalidStoreChanges(errors)
+     return errors if errors else normalized
+ 
+ 
++def merge_store_patch(current: dict, patch: StorePatch) -> dict:
++    if not patch.is_store:
++        return {**current, "is_store": False}
++    return {
++        "is_store": True,
++        "store_code": current.get("store_code") if patch.store_code is UNSET else patch.store_code,
++        "notes": current.get("notes") if patch.notes is UNSET else patch.notes,
++    }
++
+ ```
+ 
+ ## backend/app/stores/service.py
+ ```
+-from dataclasses import asdict
+ from datetime import datetime
+ 
+ from sqlalchemy import delete, func, select
+ from sqlalchemy.orm import Session, sessionmaker
+ 
+ from app.directory.domain import Department as DomainDepartment
+ from app.directory.domain import Employee as DomainEmployee
+ from app.directory.domain import Membership, resolve_employee_stores
+ from app.persistence.models import ChangeLog, DatasetState, Department, Employee, EmployeeDepartment, EmployeeStore, StoreCodeReservation, StoreProfile
+ 
+-from .domain import InvalidStoreChanges, StorePatch, StoreValidationError, validate_store_changes
++from .domain import InvalidStoreChanges, StorePatch, StoreValidationError, merge_store_patch, validate_store_changes
+ 
+ 
+ class StoreAdminService:
+     def __init__(self, sessions: sessionmaker[Session]):
+         self._sessions = sessions
+ 
+     def preview(self, changes: list[StorePatch], expected_version: int) -> dict:
+         with self._sessions() as db, db.begin():
+             state = self._lock_state(db, expected_version, lock=False)
+             normalized = self._validate(db, changes)
+             affected = db.scalar(select(func.count(func.distinct(EmployeeDepartment.employee_id))).where(EmployeeDepartment.department_id.in_([c.department_id for c in normalized]), EmployeeDepartment.active.is_(True))) or 0
+-            return {"data_version": state.data_version, "changes": [asdict(c) for c in normalized], "affected_employee_count": affected}
++            concrete = []
++            for change in normalized:
++                after = merge_store_patch(self._snapshot(db.get(StoreProfile, change.department_id)), change)
++                concrete.append({"department_id": change.department_id, **after})
++            return {"data_version": state.data_version, "changes": concrete, "affected_employee_count": affected}
+ 
+     def apply(self, changes: list[StorePatch], expected_version: int, actor: str, now: datetime) -> dict:
+         with self._sessions.begin() as db:
+             state = self._lock_state(db, expected_version, lock=True)
+             normalized = self._validate(db, changes)
+             business_changes = 0
+             for change in normalized:
+                 current = db.get(StoreProfile, change.department_id)
+                 before = self._snapshot(current)
+-                after = {"is_store": change.is_store, "store_code": change.store_code, "notes": change.notes}
++                after = merge_store_patch(before, change)
+                 if before == after:
+                     continue
+-                if change.store_code:
+-                    reservation = db.get(StoreCodeReservation, change.store_code)
++                if after["store_code"]:
++                    reservation = db.get(StoreCodeReservation, after["store_code"])
+                     if reservation and reservation.department_id != change.department_id:
+                         raise InvalidStoreChanges([StoreValidationError(change.department_id, "STORE_CODE_RESERVED", "门店编码已由其他部门保留")])
+                     if reservation is None:
+-                        db.add(StoreCodeReservation(store_code=change.store_code, department_id=change.department_id, reserved_at=now))
++                        db.add(StoreCodeReservation(store_code=after["store_code"], department_id=change.department_id, reserved_at=now))
+                 if current is None:
+                     current = StoreProfile(department_id=change.department_id)
+                     db.add(current)
+-                current.is_store, current.store_code, current.notes = change.is_store, change.store_code, change.notes
++                current.is_store, current.store_code, current.notes = after["is_store"], after["store_code"], after["notes"]
+                 db.add(ChangeLog(object_type="store", object_id=change.department_id, source="admin", actor=actor, before_data=before, after_data=after, committed_at=now))
+                 business_changes += 1
+             if business_changes:
+                 db.flush()
+                 self._rebuild_projection(db)
+                 state.data_version += 1
+             return {"data_version": state.data_version, "changed_count": business_changes}
+ 
+     def _validate(self, db: Session, changes: list[StorePatch]) -> list[StorePatch]:
+         ids = [change.department_id for change in changes]
+         departments = {row.id: {"status": row.status, "is_virtual_root": row.is_virtual_root} for row in db.scalars(select(Department).where(Department.id.in_(ids)))}
+-        return validate_store_changes(changes, departments=departments)
++        normalized = validate_store_changes(changes, departments=departments)
++        errors = []
++        for change in normalized:
++            current = self._snapshot(db.get(StoreProfile, change.department_id))
++            code = merge_store_patch(current, change)["store_code"]
++            reservation = db.get(StoreCodeReservation, code) if code else None
++            if reservation is not None and reservation.department_id != change.department_id:
++                errors.append(StoreValidationError(change.department_id, "STORE_CODE_RESERVED", "门店编码已由其他部门保留"))
++        if errors:
++            raise InvalidStoreChanges(errors)
++        return normalized
+ 
+     @staticmethod
+     def _lock_state(db: Session, expected_version: int, lock: bool) -> DatasetState:
+         stmt = select(DatasetState).where(DatasetState.id == 1)
+         state = db.scalar(stmt.with_for_update() if lock else stmt)
+         if state is None:
+             raise RuntimeError("INITIALIZATION_INCOMPLETE")
+         if state.data_version != expected_version:
+             raise RuntimeError("DATASET_CHANGED")
+         return state
+ 
+     @staticmethod
+@@ -1663,24 +1779,36 @@
+
+ 
+ 
+ def main() -> None:
+     logger.info("同步 worker 已启动；等待飞书适配器接入")
+ 
+ 
+ if __name__ == "__main__":
+     main()
+ 
+ 
+ ```
+ 
++## backend/app/web.py
++```
++from datetime import datetime, timezone
++
++
++def utc_datetime(value: datetime | None) -> datetime | None:
++    if value is None:
++        return None
++    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
++
++```
++
+ ## backend/migrations/env.py
+ ```
+ import os
+ 
+ from alembic import context
+ from sqlalchemy import engine_from_config, pool
+ 
+ from app.persistence.models import Base
+ 
+ 
+ config = context.config
+ database_url = os.getenv("ORG_DATABASE_URL")
+@@ -1701,44 +1829,69 @@
+
+         context.configure(connection=connection, target_metadata=target_metadata)
+         with context.begin_transaction():
+             context.run_migrations()
+ 
+ 
+ run_migrations_offline() if context.is_offline_mode() else run_migrations_online()
+ 
+ 
+ ```
+ 
+ ## backend/migrations/versions/0001_initial.py
+ ```
+-"""创建组织目录首版表结构。"""
++"""创建组织目录首版冻结表结构。"""
+ 
+ from alembic import op
+-
+-from app.persistence.models import Base
++import sqlalchemy as sa
+ 
+ 
+ revision = "0001_initial"
+ down_revision = None
+ branch_labels = None
+ depends_on = None
+ 
+ 
++T = {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"}
++SID = sa.String(191, collation="utf8mb4_bin")
++
++
+ def upgrade():
+-    # 元数据是首版结构的单一来源；后续迁移必须使用显式增量 DDL。
+-    Base.metadata.create_all(bind=op.get_bind(), checkfirst=False)
++    op.create_table("dataset_state", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("dataset_epoch", SID, nullable=False), sa.Column("data_version", sa.BigInteger(), nullable=False), sa.Column("initialization_status", sa.String(32), nullable=False), sa.Column("coverage_status", sa.String(32), nullable=False), sa.Column("last_full_sync_at", sa.DateTime()), **T)
++    op.create_table("system_setting", sa.Column("key", sa.String(128, collation="utf8mb4_bin"), primary_key=True), sa.Column("value", sa.Text(), nullable=False), **T)
++    op.create_table("department", sa.Column("id", SID, primary_key=True), sa.Column("feishu_department_id", SID, nullable=False, unique=True), sa.Column("parent_id", SID, sa.ForeignKey("department.id")), sa.Column("name", sa.String(255), nullable=False), sa.Column("status", sa.String(32), nullable=False), sa.Column("sync_quality", sa.String(32), nullable=False), sa.Column("is_virtual_root", sa.Boolean(), nullable=False), sa.Column("last_seen_at", sa.DateTime()), **T)
++    op.create_table("feishu_connection", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("tenant_key", SID, unique=True), sa.Column("app_id", SID, nullable=False), sa.Column("status", sa.String(32), nullable=False), sa.Column("coverage_status", sa.String(32), nullable=False), **T)
++    op.create_table("admin_allowlist", sa.Column("open_id", SID, primary_key=True), sa.Column("created_at", sa.DateTime(), nullable=False), **T)
++    op.create_table("admin_session", sa.Column("id", SID, primary_key=True), sa.Column("open_id", SID, nullable=False), sa.Column("csrf_hash", sa.String(64), nullable=False), sa.Column("expires_at", sa.DateTime(), nullable=False), sa.Column("revoked_at", sa.DateTime()), **T)
++    op.create_index("ix_admin_session_open_id", "admin_session", ["open_id"])
++    op.create_table("api_client", sa.Column("id", SID, primary_key=True), sa.Column("name", sa.String(255), nullable=False), sa.Column("secret_hash", sa.String(255), nullable=False), sa.Column("created_at", sa.DateTime(), nullable=False), sa.Column("revoked_at", sa.DateTime()), **T)
++    op.create_table("sync_job", sa.Column("id", SID, primary_key=True), sa.Column("type", sa.String(32), nullable=False), sa.Column("root_department_id", SID), sa.Column("requested_by", sa.String(255), nullable=False), sa.Column("status", sa.String(32), nullable=False), sa.Column("phase", sa.String(64)), sa.Column("attempt", sa.Integer(), nullable=False), sa.Column("lease_generation", sa.Integer(), nullable=False), sa.Column("lease_expires_at", sa.DateTime()), sa.Column("error_code", sa.String(64)), sa.Column("error_detail", sa.Text()), sa.Column("created_at", sa.DateTime(), nullable=False), sa.Column("updated_at", sa.DateTime(), nullable=False), **T)
++    op.create_index("ix_sync_job_status", "sync_job", ["status"])
++    op.create_index("ix_sync_job_scope", "sync_job", ["type", "root_department_id", "status"])
++    op.create_table("event_inbox", sa.Column("event_id", SID, primary_key=True), sa.Column("event_type", sa.String(128), nullable=False), sa.Column("object_id", SID), sa.Column("payload", sa.JSON(), nullable=False), sa.Column("status", sa.String(32), nullable=False), sa.Column("attempts", sa.Integer(), nullable=False), sa.Column("received_at", sa.DateTime(), nullable=False), **T)
++    op.create_index("ix_event_inbox_status", "event_inbox", ["status"])
++    op.create_table("change_log", sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True), sa.Column("object_type", sa.String(32), nullable=False), sa.Column("object_id", SID, nullable=False), sa.Column("source", sa.String(32), nullable=False), sa.Column("actor", sa.String(255)), sa.Column("job_id", SID), sa.Column("before_data", sa.JSON()), sa.Column("after_data", sa.JSON()), sa.Column("committed_at", sa.DateTime(), nullable=False), **T)
++    op.create_index("ix_change_log_committed_at", "change_log", ["committed_at"])
++    op.create_table("employee", sa.Column("id", SID, primary_key=True), sa.Column("feishu_user_id", SID, nullable=False, unique=True), sa.Column("open_id", SID, unique=True), sa.Column("name", sa.String(255), nullable=False), sa.Column("employee_no", sa.String(128)), sa.Column("status", sa.String(32), nullable=False), sa.Column("sync_quality", sa.String(32), nullable=False), sa.Column("primary_department_id", SID, sa.ForeignKey("department.id")), sa.Column("primary_store_status", sa.String(32), nullable=False), sa.Column("last_seen_at", sa.DateTime()), **T)
++    op.create_table("store_profile", sa.Column("department_id", SID, sa.ForeignKey("department.id"), primary_key=True), sa.Column("is_store", sa.Boolean(), nullable=False), sa.Column("store_code", sa.String(128, collation="utf8mb4_bin"), unique=True), sa.Column("notes", sa.Text()), **T)
++    op.create_table("store_code_reservation", sa.Column("store_code", sa.String(128, collation="utf8mb4_bin"), primary_key=True), sa.Column("department_id", SID, sa.ForeignKey("department.id"), nullable=False), sa.Column("reserved_at", sa.DateTime(), nullable=False), **T)
++    op.create_table("sync_staging", sa.Column("job_id", SID, sa.ForeignKey("sync_job.id"), primary_key=True), sa.Column("object_type", sa.String(32), primary_key=True), sa.Column("source_id", SID, primary_key=True), sa.Column("normalized_data", sa.JSON(), nullable=False), **T)
++    op.create_table("employee_department", sa.Column("employee_id", SID, sa.ForeignKey("employee.id"), primary_key=True), sa.Column("department_id", SID, sa.ForeignKey("department.id"), primary_key=True), sa.Column("is_primary", sa.Boolean(), nullable=False), sa.Column("active", sa.Boolean(), nullable=False), **T)
++    op.create_table("employee_store", sa.Column("employee_id", SID, sa.ForeignKey("employee.id"), primary_key=True), sa.Column("store_id", SID, sa.ForeignKey("department.id"), primary_key=True), sa.Column("is_primary", sa.Boolean(), nullable=False), sa.Column("path", sa.JSON(), nullable=False), **T)
++    op.bulk_insert(sa.table("dataset_state", sa.column("id", sa.Integer()), sa.column("dataset_epoch", SID), sa.column("data_version", sa.BigInteger()), sa.column("initialization_status", sa.String()), sa.column("coverage_status", sa.String())), [{"id": 1, "dataset_epoch": "pending", "data_version": 0, "initialization_status": "pending", "coverage_status": "unknown"}])
++    op.bulk_insert(sa.table("system_setting", sa.column("key", sa.String()), sa.column("value", sa.Text())), [{"key": "task_queue_lock", "value": "1"}])
+ 
+ 
+ def downgrade():
+-    Base.metadata.drop_all(bind=op.get_bind(), checkfirst=False)
++    for table in ("employee_store", "employee_department", "sync_staging", "store_code_reservation", "store_profile", "employee", "change_log", "event_inbox", "sync_job", "api_client", "admin_session", "admin_allowlist", "feishu_connection", "department", "system_setting", "dataset_state"):
++        op.drop_table(table)
+ 
+ ```
+ 
+ ## backend/pyproject.toml
+ ```
+ [build-system]
+ requires = ["setuptools>=75"]
+ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "organization-directory-backend"
+ version = "0.1.0"
+@@ -1978,24 +2131,71 @@
+
+         assert "CHARSET=utf8mb4" in ddl
+     assert "utf8mb4_bin" in department_ddl
+     assert "utf8mb4_bin" in client_ddl
+ 
+ 
+ def test_revoked_sessions_can_be_retained_after_allowlist_entry_is_deleted():
+     ddl = str(CreateTable(AdminSession.__table__).compile(dialect=mysql.dialect()))
+     assert "FOREIGN KEY(open_id)" not in ddl
+     assert any(index.name == "ix_admin_session_open_id" for index in AdminSession.__table__.indexes)
+ 
+ ```
+ 
++## backend/tests/test_review_fixes.py
++```
++from datetime import datetime, timezone
++
++from sqlalchemy.dialects import mysql
++
++from app.main import app
++from app.persistence.repositories import SqlIdentityRepository
++from app.stores.domain import UNSET, StorePatch, merge_store_patch
++from app.web import utc_datetime
++
++
++def test_persistent_session_query_has_explicit_allowlist_join():
++    statement = SqlIdentityRepository.session_auth_statement("sid", datetime(2026, 9, 15))
++    sql = str(statement.compile(dialect=mysql.dialect(), compile_kwargs={"literal_binds": True}))
++    assert "JOIN admin_allowlist ON admin_allowlist.open_id = admin_session.open_id" in sql
++
++
++def test_store_patch_preserves_omitted_fields_and_null_can_clear_code():
++    current = {"is_store": True, "store_code": "A-01", "notes": "历史备注"}
++    toggled = merge_store_patch(current, StorePatch("DepA", False))
++    cleared = merge_store_patch(current, StorePatch("DepA", True, store_code=None))
++    notes_only = merge_store_patch(current, StorePatch("DepA", True, notes="新备注"))
++    assert toggled == {"is_store": False, "store_code": "A-01", "notes": "历史备注"}
++    assert cleared == {"is_store": True, "store_code": None, "notes": "历史备注"}
++    assert notes_only == {"is_store": True, "store_code": "A-01", "notes": "新备注"}
++
++
++def test_naive_database_datetime_is_serialized_as_utc():
++    assert utc_datetime(datetime(2026, 9, 15, 3, 4, 5)).isoformat() == "2026-09-15T03:04:05+00:00"
++    aware = datetime(2026, 9, 15, 3, 4, 5, tzinfo=timezone.utc)
++    assert utc_datetime(aware) is aware
++
++
++def test_store_employee_endpoints_support_cross_endpoint_version_and_admin_alias():
++    schema = app.openapi()["paths"]
++    public_parameters = {item["name"] for item in schema["/api/v1/stores/{store_id}/employees"]["get"]["parameters"]}
++    assert {"dataset_epoch", "data_version"} <= public_parameters
++    assert "/admin/api/stores/{store_id}/employees" in schema
++
++
++def test_task_list_has_stable_cursor_parameter():
++    parameters = {item["name"] for item in app.openapi()["paths"]["/admin/api/sync/jobs"]["get"]["parameters"]}
++    assert "cursor" in parameters
++
++```
++
+ ## backend/tests/test_store_commands.py
+ ```
+ from app.stores.domain import StorePatch, validate_store_changes
+ 
+ 
+ def test_store_code_is_trimmed_and_empty_code_becomes_none():
+     changes = validate_store_changes(
+         [StorePatch("DepA", True, "  AbC-1  ", " note "), StorePatch("DepB", False, "   ", None)],
+         departments={"DepA": {"status": "active", "is_virtual_root": False}, "DepB": {"status": "active", "is_virtual_root": False}},
+     )
+     assert changes[0].store_code == "AbC-1"
+     assert changes[1].store_code is None

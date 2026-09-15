@@ -1,0 +1,668 @@
+--- reviewed-backend
++++ fixed-backend
+@@ -90,6 +90,9 @@
+         data['last_event_processed_at']=processed.value if processed else None
+         data['failed_event_count']=db.scalar(select(func.count()).select_from(EventInbox).where(EventInbox.status=='failed')) or 0
+     data['coverage_acceptance']={'reference':settings.coverage_acceptance_reference,'all_members_verified':settings.coverage_all_members_verified,'departmentless_verified':settings.coverage_departmentless_verified}
++    from app.sync.coverage import CoverageService
++    persisted=CoverageService(runtime.sessions).get()
++    if persisted: data['coverage_acceptance']=persisted
+     return {"data": data, "meta": meta}
+ 
+ 
+@@ -790,7 +793,7 @@
+ import secrets
+ from datetime import datetime, timedelta, timezone
+ from sqlalchemy import delete, select
+-from app.persistence.models import OAuthState, LoginIdentity, AdminAllowlist, AdminSession
++from app.persistence.models import OAuthState, LoginIdentity, AdminAllowlist, AdminSession, Employee, ChangeLog
+ 
+ 
+ class OAuthService:
+@@ -820,12 +823,24 @@
+         if identity.get('tenant_key') != self.settings.feishu_tenant_key or not identity.get('open_id') or not identity.get('user_id'):
+             raise ValueError('OAUTH_IDENTITY_MISMATCH')
+         csrf = secrets.token_urlsafe(32)
++        failure = None
+         with self.sessions.begin() as db:
+             if db.scalar(select(AdminAllowlist).where(AdminAllowlist.open_id == identity['open_id']).with_for_update()) is None:
+                 raise ValueError('ADMIN_NOT_ALLOWED')
+-            db.merge(LoginIdentity(open_id=identity['open_id'], user_id=identity['user_id'], tenant_key=identity['tenant_key']))
+-            session = AdminSession(id=secrets.token_urlsafe(32), open_id=identity['open_id'], csrf_hash=hmac.new(self.settings.session_secret.get_secret_value().encode(), csrf.encode(), hashlib.sha256).hexdigest(), expires_at=now+timedelta(hours=12))
+-            db.add(session)
++            existing = db.scalar(select(LoginIdentity).where(LoginIdentity.open_id==identity['open_id']).with_for_update())
++            employee = db.scalar(select(Employee).where(Employee.feishu_user_id==identity['user_id']).with_for_update())
++            if existing and (existing.user_id!=identity['user_id'] or existing.tenant_key!=identity['tenant_key']):
++                failure='LOGIN_IDENTITY_MISMATCH'
++            elif employee and employee.status=='inactive':
++                failure='EMPLOYEE_INACTIVE'
++            if failure:
++                db.add(ChangeLog(object_type='security',object_id=identity['open_id'],source='oauth',actor=None,before_data=None,after_data={'error_code':failure},committed_at=now))
++            else:
++                if existing is None: db.add(LoginIdentity(open_id=identity['open_id'],user_id=identity['user_id'],tenant_key=identity['tenant_key']))
++                session = AdminSession(id=secrets.token_urlsafe(32), open_id=identity['open_id'], csrf_hash=hmac.new(self.settings.session_secret.get_secret_value().encode(), csrf.encode(), hashlib.sha256).hexdigest(), expires_at=now+timedelta(hours=12))
++                db.add(session)
++        # 先提交安全事件，再拒绝；不要随业务异常回滚审计。
++        if failure: raise ValueError(failure)
+         return session, csrf
+ 
+ ```
+@@ -980,6 +995,8 @@
+ 
+ from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request
+ from fastapi.exceptions import RequestValidationError
++from starlette.exceptions import HTTPException as StarletteHTTPException
++from sqlalchemy.exc import SQLAlchemyError, OperationalError, InterfaceError, DisconnectionError, TimeoutError as SQLTimeoutError
+ from fastapi.responses import JSONResponse, RedirectResponse
+ from pydantic import BaseModel
+ 
+@@ -1001,10 +1018,17 @@
+     return JSONResponse(body, status_code=status)
+ 
+ 
+-@app.exception_handler(HTTPException)
++@app.exception_handler(StarletteHTTPException)
+ async def http_error_handler(request: Request, exc: HTTPException):
+     detail = exc.detail if isinstance(exc.detail, dict) else {"code": "HTTP_ERROR", "message": str(exc.detail)}
+     return error(detail.get("code", "HTTP_ERROR"), detail.get("message", "请求失败"), exc.status_code, fields=detail.get("fields"))
++
++
++@app.exception_handler(SQLAlchemyError)
++async def database_error_handler(request: Request, exc: SQLAlchemyError):
++    # 不序列化或记录异常原文，原文可能包含 SQL、参数和数据库地址。
++    unavailable=isinstance(exc,(OperationalError,InterfaceError,DisconnectionError,SQLTimeoutError))
++    return error('DATABASE_UNAVAILABLE' if unavailable else 'DATABASE_ERROR','数据库暂时不可用' if unavailable else '数据库操作失败',503 if unavailable else 500)
+ 
+ 
+ @app.exception_handler(RequestValidationError)
+@@ -1075,7 +1099,7 @@
+         response.set_cookie('org_session',session.id,max_age=43200,httponly=True,secure=True,samesite='lax')
+         response.set_cookie('org_csrf',csrf,max_age=43200,httponly=True,secure=True,samesite='strict',path='/admin/auth')
+     except ValueError as exc:
+-        response=error(str(exc) if str(exc) in {'OAUTH_CODE_MISSING','OAUTH_STATE_INVALID','OAUTH_IDENTITY_MISMATCH','ADMIN_NOT_ALLOWED'} else 'OAUTH_FAILED','登录校验失败，请重新发起登录',403)
++        response=error(str(exc) if str(exc) in {'OAUTH_CODE_MISSING','OAUTH_STATE_INVALID','OAUTH_IDENTITY_MISMATCH','ADMIN_NOT_ALLOWED','LOGIN_IDENTITY_MISMATCH','EMPLOYEE_INACTIVE'} else 'OAUTH_FAILED','登录校验失败，请重新发起登录',403)
+     except RuntimeError as exc:
+         response=error('CONFIG_BINDING_MISMATCH','当前应用或租户与数据库绑定不一致',503) if str(exc)=='CONFIG_BINDING_MISMATCH' else error('OAUTH_UPSTREAM_UNAVAILABLE','飞书登录暂时不可用',502)
+     response.delete_cookie('org_oauth_state',path='/admin/auth',secure=True,httponly=True,samesite='lax')
+@@ -1242,7 +1266,7 @@
+ def create_mysql_engine(database_url: str) -> Engine:
+     if not database_url.startswith("mysql+pymysql://"):
+         raise ValueError("ORG_DATABASE_URL must use mysql+pymysql")
+-    return create_engine(database_url, pool_pre_ping=True, pool_recycle=1800, isolation_level="REPEATABLE READ")
++    return create_engine(database_url, pool_pre_ping=True, pool_recycle=1800, isolation_level="REPEATABLE READ", hide_parameters=True)
+ 
+ 
+ def session_factory(engine: Engine) -> sessionmaker[Session]:
+@@ -1294,6 +1318,16 @@
+     owner: Mapped[str | None] = mapped_column(SOURCE_ID)
+     generation: Mapped[int] = mapped_column(Integer, default=0)
+     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
++    __table_args__ = TABLE_ARGS
++
++
++class PendingFact(Base):
++    __tablename__ = 'pending_fact'
++    object_type: Mapped[str] = mapped_column(String(32),primary_key=True)
++    source_id: Mapped[str] = mapped_column(SOURCE_ID,primary_key=True)
++    normalized_data: Mapped[dict] = mapped_column(JSON)
++    error_code: Mapped[str] = mapped_column(String(64))
++    updated_at: Mapped[datetime] = mapped_column(DateTime)
+     __table_args__ = TABLE_ARGS
+ 
+ 
+@@ -1671,7 +1705,7 @@
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import Session, sessionmaker
+ 
+-from .models import AdminAllowlist, AdminSession, ApiClient, ChangeLog, DatasetState, SyncJob, SystemSetting
++from .models import AdminAllowlist, AdminSession, ApiClient, ChangeLog, DatasetState, SyncJob, SystemSetting, LoginIdentity, Employee
+ 
+ 
+ class SqlIdentityRepository:
+@@ -1694,9 +1728,10 @@
+ 
+     @staticmethod
+     def session_auth_statement(session_id: str, now: datetime):
++        inactive = select(LoginIdentity.open_id).join(Employee,Employee.feishu_user_id==LoginIdentity.user_id).where(LoginIdentity.open_id==AdminSession.open_id,Employee.status=='inactive').exists()
+         return select(AdminSession).join(
+             AdminAllowlist, AdminAllowlist.open_id == AdminSession.open_id
+-        ).where(AdminSession.id == session_id, AdminSession.revoked_at.is_(None), AdminSession.expires_at > now)
++        ).where(AdminSession.id == session_id, AdminSession.revoked_at.is_(None), AdminSession.expires_at > now, ~inactive)
+ 
+     def create_session(self, open_id: str, csrf_token: str, expires_at: datetime, now: datetime) -> AdminSession | None:
+         """供 OAuth 适配器在换取并核实 open_id 后建立可撤销会话。"""
+@@ -2176,6 +2211,7 @@
+ ```
+ """完整采集候选；分页异常向上抛出，绝不返回半轮结果。"""
+ from dataclasses import dataclass, field
++from datetime import datetime,timezone
+ 
+ 
+ @dataclass
+@@ -2185,6 +2221,7 @@
+     pending: list = field(default_factory=list)
+     coverage_status: str = "unknown"
+     full: bool = False
++    collection_started_at: str | None = None
+ 
+ 
+ def normalize_user(raw):
+@@ -2220,7 +2257,7 @@
+             self.progress(phase=phase,departments_processed=len(result.departments),employees_processed=len(result.employees),departments_total=None,employees_total=None)
+ 
+     def collect(self, root=None, previous_departments=(), previous_users=()):
+-        result = Candidate(full=root is None)
++        result = Candidate(full=root is None,collection_started_at=datetime.now(timezone.utc).isoformat())
+         result.departments["0"] = {"id": "0", "feishu_department_id": "0", "parent_id": None, "name": "组织", "status": "active", "sync_quality": "complete", "is_virtual_root": True}
+         users, roots, groups = set(), [], []
+         self._progress('scopes',result)
+@@ -2297,12 +2334,87 @@
+ 
+ ```
+ 
++## backend/app/sync/coverage.py
++```
++"""受运维主机权限约束的覆盖重新验收 CLI；不直接发布 complete。"""
++import argparse
++import json
++import secrets
++from datetime import datetime,timezone
++from sqlalchemy import select,delete
++from app.persistence.models import SystemSetting,DatasetState,SyncJob,ChangeLog
++
++
++class CoverageService:
++    def __init__(self,sessions): self.sessions=sessions
++
++    def get(self):
++        with self.sessions() as db:
++            row=db.get(SystemSetting,'coverage_acceptance')
++            return json.loads(row.value) if row else None
++
++    def verified(self,fallback=False):
++        with self.sessions() as db:
++            if db.get(SystemSetting,'coverage_invalidated'): return False
++            row=db.get(SystemSetting,'coverage_acceptance')
++            if row is None: return fallback
++            value=json.loads(row.value)
++            return bool(value.get('reference') and value.get('all_members_verified') is True and value.get('departmentless_verified') is True)
++
++    def accept(self,reference,actor,all_members_verified,departmentless_verified):
++        if not reference or not reference.strip() or len(reference)>2000 or not actor or not actor.strip() or len(actor)>255 or all_members_verified is not True or departmentless_verified is not True:
++            raise ValueError('COVERAGE_ACCEPTANCE_INVALID')
++        now=datetime.now(timezone.utc).replace(tzinfo=None)
++        with self.sessions.begin() as db:
++            lock=db.scalar(select(SystemSetting).where(SystemSetting.key=='task_queue_lock').with_for_update())
++            if lock is None: raise RuntimeError('DATABASE_SCHEMA_INCOMPLETE')
++            state=db.scalar(select(DatasetState).where(DatasetState.id==1).with_for_update())
++            if state is None: raise RuntimeError('DATABASE_SCHEMA_INCOMPLETE')
++            row=db.get(SystemSetting,'coverage_acceptance')
++            before=json.loads(row.value) if row else None
++            after={'reference':reference.strip(),'all_members_verified':True,'departmentless_verified':True,'accepted_by':actor.strip(),'updated_at':now.isoformat()+'+00:00'}
++            db.merge(SystemSetting(key='coverage_acceptance',value=json.dumps(after,ensure_ascii=False)))
++            db.execute(delete(SystemSetting).where(SystemSetting.key=='coverage_invalidated'))
++            state.coverage_status='unknown'
++            # 不复用正在执行的旧采集；始终保存一个验收后的全量核对。
++            job=SyncJob(id=secrets.token_urlsafe(12),type='reconcile',requested_by=actor.strip(),status='queued',created_at=now,updated_at=now)
++            db.add(job)
++            db.add(ChangeLog(object_type='settings',object_id='coverage_acceptance',source='cli',actor=actor.strip(),job_id=job.id,before_data=before,after_data=after,committed_at=now))
++            return {'job_id':job.id,**after}
++
++
++def main(argv=None):
++    parser=argparse.ArgumentParser(description='记录企业覆盖重新验收依据，并安排全量核对')
++    parser.add_argument('--reference',required=True,help='验收记录编号或摘要，禁止填写秘密')
++    parser.add_argument('--actor',required=True,help='运维操作人标识')
++    parser.add_argument('--all-members-verified',action='store_true',required=True)
++    parser.add_argument('--departmentless-verified',action='store_true',required=True)
++    args=parser.parse_args(argv)
++    from app.dependencies import get_runtime
++    from app.config import get_settings
++    from app.feishu.binding import bind_connection
++    runtime,settings=get_runtime(),get_settings()
++    if not runtime: parser.error('数据库与会话密钥尚未配置')
++    try:
++        bind_connection(runtime.sessions,settings.feishu_app_id,settings.feishu_tenant_key)
++        result=CoverageService(runtime.sessions).accept(args.reference,args.actor,args.all_members_verified,args.departmentless_verified)
++    except Exception:
++        # CLI 不输出 SQL、异常原文或配置。
++        raise SystemExit('覆盖验收操作失败；未确认提交，请检查配置及数据库状态') from None
++    print(json.dumps({'job_id':result['job_id'],'status':'queued'},ensure_ascii=False))
++
++
++if __name__=='__main__': main()
++
++```
++
+ ## backend/app/sync/publisher.py
+ ```
+ import uuid
++import json
+ from datetime import datetime, timezone
+ from sqlalchemy import delete, select
+-from app.persistence.models import DatasetState, Department, Employee, EmployeeDepartment, SyncJob, SyncStaging, ChangeLog, EventInbox, SystemSetting, WorkerLease
++from app.persistence.models import DatasetState, Department, Employee, EmployeeDepartment, SyncJob, SyncStaging, ChangeLog, EventInbox, SystemSetting, WorkerLease, PendingFact, LoginIdentity, AdminSession
+ from app.stores.service import StoreAdminService
+ 
+ 
+@@ -2321,20 +2433,18 @@
+             job = db.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update()) if job_id else None
+             if job_id and (not job or job.status != 'running' or job.lease_generation != generation or not job.lease_expires_at or job.lease_expires_at <= now):
+                 raise ValueError('STALE_LEASE')
++            candidate=self._defer_unresolved(db,candidate,now)
+             if job:
+                 db.execute(delete(SyncStaging).where(SyncStaging.job_id == job_id))
+                 for kind, records in [('department', candidate.departments), ('employee', candidate.employees)]:
+                     for identifier, value in records.items():
+                         db.add(SyncStaging(job_id=job_id, object_type=kind, source_id=identifier, normalized_data=value))
+             changes = 0
+-            # 未读祖先使用显式不可信占位，既满足外键，又不推断业务事实。
++            # 未解析事实只保存在 pending_fact；已有事实仅降质量。
+             for kind, identifier in candidate.pending:
+                 model = Department if kind == 'department' else Employee
+                 row = db.get(model, identifier)
+-                if row is None and model is Department:
+-                    row = Department(id=identifier, feishu_department_id=identifier, name='待核实部门', status='active', sync_quality='pending_verification', is_virtual_root=False)
+-                    db.add(row); db.flush(); changes += 1
+-                elif row is not None and row.sync_quality != 'pending_verification':
++                if row is not None and row.sync_quality != 'pending_verification':
+                     self._log(db, kind, identifier, {'sync_quality': row.sync_quality}, {'sync_quality': 'pending_verification'}, job_id, now)
+                     row.sync_quality = 'pending_verification'; changes += 1
+             remaining = dict(candidate.departments)
+@@ -2356,6 +2466,7 @@
+                 fields = {k: v for k, v in value.items() if k != 'department_ids'}
+                 changes += self._upsert(db, Employee, fields, 'employee', job_id, now)
+                 db.flush()
++                if value['status']=='inactive': self._revoke_employee_sessions(db,value['feishu_user_id'],job_id,now)
+                 before = {(r.department_id, r.is_primary, r.active) for r in db.scalars(select(EmployeeDepartment).where(EmployeeDepartment.employee_id == key))}
+                 after = {(d, d == value['primary_department_id'], value['status'] == 'active') for d in value['department_ids']}
+                 if before != after:
+@@ -2373,7 +2484,13 @@
+                             row.sync_quality = 'pending_verification'; changes += 1
+                 state.last_full_sync_at = now
+                 state.coverage_status = candidate.coverage_status
++                if candidate.pending: state.coverage_status='incomplete'
+                 if db.get(SystemSetting,'coverage_invalidated'): state.coverage_status='unknown'
++                acceptance=db.get(SystemSetting,'coverage_acceptance')
++                if acceptance:
++                    accepted_at=json.loads(acceptance.value)['updated_at']
++                    if not candidate.collection_started_at or datetime.fromisoformat(candidate.collection_started_at)<datetime.fromisoformat(accepted_at):
++                        state.coverage_status='unknown'
+                 state.initialization_status = 'complete'
+                 if state.dataset_epoch == 'pending': state.dataset_epoch = uuid.uuid4().hex
+             if changes:
+@@ -2389,6 +2506,50 @@
+                 event.attempts += 1
+                 if candidate.pending: event.payload={**event.payload,'error_code':'PENDING_VERIFICATION'}
+                 db.merge(SystemSetting(key='last_event_processed_at', value=now.isoformat()+'+00:00'))
++
++    @staticmethod
++    def _defer_unresolved(db,candidate,now):
++        from dataclasses import replace
++        known=set(db.scalars(select(Department.id)))
++        departments=dict(candidate.departments)
++        employees=dict(candidate.employees)
++        pending=set(candidate.pending)
++        deferred={}
++        # 父引用缺失时递归延后依赖它的部门；已有部门保留原父引用。
++        while True:
++            available=known|set(departments)
++            blocked={key for key,value in departments.items() if value['parent_id'] and value['parent_id'] not in available}
++            if not blocked: break
++            for key in blocked:
++                value=departments.pop(key)
++                deferred[('department',key)]=value
++                pending.add(('department',key))
++                pending.add(('department',value['parent_id']))
++        available=known|set(departments)
++        for key,value in list(employees.items()):
++            references=set(value['department_ids'])
++            if value['primary_department_id']: references.add(value['primary_department_id'])
++            if references-available:
++                deferred[('employee',key)]=employees.pop(key)
++                pending.add(('employee',key))
++                pending.update(('department',identifier) for identifier in references-available)
++        for kind,identifier in pending:
++            previous=db.get(PendingFact,(kind,identifier))
++            value=deferred.get((kind,identifier),previous.normalized_data if previous else {})
++            db.merge(PendingFact(object_type=kind,source_id=identifier,normalized_data=value,error_code='PENDING_VERIFICATION',updated_at=now))
++        for kind,records in [('department',departments),('employee',employees)]:
++            for identifier in records:
++                db.execute(delete(PendingFact).where(PendingFact.object_type==kind,PendingFact.source_id==identifier))
++        return replace(candidate,departments=departments,employees=employees,pending=sorted(pending))
++
++    @staticmethod
++    def _revoke_employee_sessions(db,user_id,job_id,now):
++        identities=list(db.scalars(select(LoginIdentity).where(LoginIdentity.user_id==user_id).with_for_update()))
++        for identity in identities:
++            sessions=list(db.scalars(select(AdminSession).where(AdminSession.open_id==identity.open_id,AdminSession.revoked_at.is_(None)).with_for_update()))
++            for session in sessions: session.revoked_at=now
++            if sessions:
++                db.add(ChangeLog(object_type='security',object_id=identity.open_id,source='feishu',actor='sync',job_id=job_id,before_data={'active_sessions':len(sessions)},after_data={'error_code':'EMPLOYEE_INACTIVE','active_sessions':0},committed_at=now))
+ 
+     def _upsert(self, db, model, value, kind, job_id, now):
+         row = db.get(model, value['id'])
+@@ -2535,13 +2696,16 @@
+ import time
+ from datetime import datetime, timedelta, timezone
+ from sqlalchemy import select
+-from app.persistence.models import WorkerLease, SyncJob, EventInbox, SystemSetting, Department, Employee, EmployeeDepartment
++from app.persistence.models import WorkerLease, SyncJob, EventInbox, SystemSetting, Department, Employee, EmployeeDepartment, PendingFact
+ from app.persistence.repositories import SqlSyncJobRepository
+ from app.sync.publisher import Publisher
+ from app.sync.settings import ScheduleService
+ 
+ 
+ def utcnow(): return datetime.now(timezone.utc).replace(tzinfo=None)
++
++
++SAFE_SYNC_ERRORS=frozenset({'FEISHU_API_ERROR','FEISHU_UNAVAILABLE','INVALID_PAGINATION','DEPARTMENT_CYCLE','FEISHU_MEMBERSHIP_UNREADABLE','FEISHU_STATUS_UNREADABLE','FEISHU_PARENT_UNREADABLE','FEISHU_TOKEN_MISSING','FEISHU_DETAIL_MISSING','FEISHU_ID_MISMATCH'})
+ 
+ 
+ class Worker:
+@@ -2550,6 +2714,7 @@
+         self.owner, self.generation = owner or secrets.token_urlsafe(24), None
+         self.jobs, self.publisher = SqlSyncJobRepository(sessions), Publisher(sessions)
+         self.current_job = None
++        self.initial_coverage_verified=bool(getattr(collector,'coverage_verified',False))
+ 
+     def acquire(self, now):
+         with self.sessions.begin() as db:
+@@ -2589,6 +2754,7 @@
+         if job:
+             self.current_job = (job.id, job.lease_generation)
+             try:
++                self._refresh_coverage()
+                 if hasattr(self.collector,'progress'): self.collector.progress=self._progress
+                 root=job.root_department_id if job.type == 'subtree' else None
+                 previous_departments,previous_users=self._previous_scope(root)
+@@ -2605,9 +2771,9 @@
+             event = db.scalar(select(EventInbox).where(EventInbox.status == 'queued').order_by(EventInbox.received_at, EventInbox.event_id).limit(1))
+         if event:
+             try:
++                self._refresh_coverage()
+                 if event.event_type == 'contact.scope.updated_v3':
+                     candidate = self.collector.collect()
+-                    candidate.coverage_status='unknown'
+                 else:
+                     candidate = self.collector.event(event.event_type, event.object_id)
+                 self.publisher.publish(candidate, event_id=event.event_id, owner=self.owner, lease_generation=self.generation)
+@@ -2616,11 +2782,17 @@
+             return True
+         return False
+ 
++    def _refresh_coverage(self):
++        from app.sync.coverage import CoverageService
++        if hasattr(self.collector,'coverage_verified'):
++            self.collector.coverage_verified=CoverageService(self.sessions).verified(self.initial_coverage_verified)
++
+     def _previous_scope(self,root):
+         with self.sessions() as db:
+             departments=list(db.scalars(select(Department)))
+             if root is None:
+-                return {d.id for d in departments},set(db.scalars(select(Employee.id)))
++                pending=list(db.scalars(select(PendingFact)))
++                return {d.id for d in departments}|{p.source_id for p in pending if p.object_type=='department'},set(db.scalars(select(Employee.id)))|{p.source_id for p in pending if p.object_type=='employee'}
+             ids={root}
+             while True:
+                 children={d.id for d in departments if d.parent_id in ids}-ids
+@@ -2658,7 +2830,7 @@
+             if lease.owner != self.owner or lease.generation != self.generation or lease.expires_at <= now: return
+             row = db.scalar(select(SyncJob).where(SyncJob.id == claimed.id).with_for_update())
+             if row.status != 'running' or row.lease_generation != claimed.lease_generation: return
+-            row.error_code = str(exc) if str(exc) in {'FEISHU_API_ERROR','FEISHU_UNAVAILABLE','INVALID_PAGINATION','DEPARTMENT_CYCLE'} else 'SYNC_FAILED'
++            row.error_code = str(exc) if str(exc) in SAFE_SYNC_ERRORS else 'SYNC_FAILED'
+             row.error_detail = None
+             row.phase, row.updated_at = 'collection_failed', now
+             row.status = 'queued' if row.attempt < 5 else 'failed'
+@@ -2821,6 +2993,27 @@
+ 
+ def downgrade():
+     for table in ('worker_lease','login_identity','oauth_state'): op.drop_table(table)
++
++```
++
++## backend/migrations/versions/0003_pending_fact.py
++```
++"""保留未解析事实，不创建活动部门占位。"""
++from alembic import op
++import sqlalchemy as sa
++
++revision='0003_pending_fact'
++down_revision='0002_feishu_runtime'
++branch_labels=None
++depends_on=None
++
++
++def upgrade():
++    op.create_table('pending_fact',sa.Column('object_type',sa.String(32),primary_key=True),sa.Column('source_id',sa.String(191,collation='utf8mb4_bin'),primary_key=True),sa.Column('normalized_data',sa.JSON(),nullable=False),sa.Column('error_code',sa.String(64),nullable=False),sa.Column('updated_at',sa.DateTime(),nullable=False),mysql_engine='InnoDB',mysql_charset='utf8mb4')
++
++
++def downgrade():
++    op.drop_table('pending_fact')
+ 
+ ```
+ 
+@@ -3892,3 +4085,222 @@
+     with sessions() as db: assert db.get(EventInbox,'e').status=='succeeded'
+ 
+ ```
++
++## backend/tests/test_task2_review_fixes.py
++```
++import json
++from datetime import datetime, timedelta, timezone
++from types import SimpleNamespace
++import pytest
++from sqlalchemy import select, event
++from sqlalchemy.exc import OperationalError
++from fastapi.testclient import TestClient
++from test_sync_persistence import sessions
++from app.persistence.models import Department, Employee, EmployeeDepartment, LoginIdentity, AdminAllowlist, AdminSession, ChangeLog, SystemSetting, SyncJob, DatasetState, WorkerLease
++from app.sync.collector import Candidate, normalize_user
++from app.sync.publisher import Publisher
++from app.feishu.oauth import OAuthService
++from app.config import Settings
++
++
++def oauth(sessions, user_id='u'):
++    class API:
++        def login(self, code): return {'open_id':'ou','user_id':user_id,'tenant_key':'t'}
++    return OAuthService(sessions,Settings(session_secret='s'*32,feishu_app_id='a',feishu_app_secret='s',feishu_tenant_key='t'),API())
++
++
++def seed_admin(sessions,status='active'):
++    with sessions.begin() as db:
++        db.add(AdminAllowlist(open_id='ou',created_at=datetime.now()))
++        db.add(LoginIdentity(open_id='ou',user_id='u',tenant_key='t'))
++        db.add(Employee(id='u',feishu_user_id='u',name='员工',status=status,sync_quality='complete'))
++        db.add(AdminSession(id='session',open_id='ou',csrf_hash='hash',expires_at=datetime.now()+timedelta(days=1)))
++
++
++def test_oauth_binding_mismatch_preserves_mapping_and_commits_safe_audit(sessions):
++    seed_admin(sessions)
++    service=oauth(sessions,'different-user'); state=service.begin()
++    with pytest.raises(ValueError,match='LOGIN_IDENTITY_MISMATCH'): service.complete(state,state,'sensitive-code')
++    with sessions() as db:
++        assert db.get(LoginIdentity,'ou').user_id=='u'
++        rows=list(db.scalars(select(ChangeLog)))
++        assert rows[-1].after_data=={'error_code':'LOGIN_IDENTITY_MISMATCH'}
++        assert 'sensitive-code' not in str(rows[-1].after_data)
++        assert len(list(db.scalars(select(AdminSession))))==1
++
++
++def test_unknown_department_and_dependent_employee_are_deferred_without_fake_facts(sessions):
++    employee=normalize_user({'user_id':'new','name':'新员工','department_ids':['missing'],'status':{'is_resigned':False}})
++    Publisher(sessions).publish(Candidate(employees={'new':employee},pending=[('department','missing')]))
++    with sessions() as db:
++        assert db.get(Department,'missing') is None
++        assert db.get(Employee,'new') is None
++        from app.persistence.models import PendingFact
++        assert db.get(PendingFact,('employee','new')).normalized_data['department_ids']==['missing']
++
++
++def test_existing_employee_retains_relations_when_new_ancestor_unreadable(sessions):
++    with sessions.begin() as db:
++        db.add(Department(id='old',feishu_department_id='old',name='旧部门',sync_quality='complete'));db.flush()
++        db.add(Employee(id='u',feishu_user_id='u',name='员工',primary_department_id='old'));db.flush()
++        db.add(EmployeeDepartment(employee_id='u',department_id='old'))
++    employee=normalize_user({'user_id':'u','name':'员工','department_ids':['missing'],'status':{'is_resigned':False}})
++    Publisher(sessions).publish(Candidate(employees={'u':employee},pending=[('department','missing')]))
++    with sessions() as db:
++        assert db.get(Employee,'u').primary_department_id=='old'
++        assert db.get(Employee,'u').sync_quality=='pending_verification'
++        assert db.get(EmployeeDepartment,('u','old')) is not None
++
++
++def test_inactive_publication_revokes_session_and_blocks_new_login(sessions):
++    from app.persistence.repositories import SqlIdentityRepository
++    seed_admin(sessions)
++    employee=normalize_user({'user_id':'u','name':'员工','department_ids':[],'status':{'is_resigned':True}})
++    Publisher(sessions).publish(Candidate(employees={'u':employee}))
++    with sessions() as db: assert db.get(AdminSession,'session').revoked_at is not None
++    assert SqlIdentityRepository(sessions,'s'*32).authenticate_session('session',datetime.now()) is None
++    service=oauth(sessions);state=service.begin()
++    with pytest.raises(ValueError,match='EMPLOYEE_INACTIVE'):service.complete(state,state,'code')
++
++
++def test_existing_inactive_mapping_blocks_unrevoked_session_but_pending_does_not(sessions):
++    from app.persistence.repositories import SqlIdentityRepository
++    seed_admin(sessions,'inactive')
++    repo=SqlIdentityRepository(sessions,'s'*32)
++    assert repo.authenticate_session('session',datetime.now()) is None
++    with sessions.begin() as db:
++        row=db.get(Employee,'u');row.status='active';row.sync_quality='pending_verification'
++    assert repo.authenticate_session('session',datetime.now()) is not None
++
++
++def test_inactive_revocation_rolls_back_with_publication_failure(sessions,monkeypatch):
++    from app.stores.service import StoreAdminService
++    seed_admin(sessions)
++    def fail(db):
++        assert db.get(AdminSession,'session').revoked_at is not None
++        raise RuntimeError('injected')
++    monkeypatch.setattr(StoreAdminService,'_rebuild_projection',fail)
++    employee=normalize_user({'user_id':'u','name':'员工','department_ids':[],'status':{'is_resigned':True}})
++    with pytest.raises(RuntimeError):Publisher(sessions).publish(Candidate(employees={'u':employee}))
++    with sessions() as db:
++        assert db.get(Employee,'u').status=='active'
++        assert db.get(AdminSession,'session').revoked_at is None
++        assert db.get(DatasetState,1).data_version==1
++
++
++def test_coverage_reacceptance_records_evidence_clears_marker_and_queues_atomically(sessions):
++    from app.sync.coverage import CoverageService
++    with sessions.begin() as db: db.add(SystemSetting(key='coverage_invalidated',value='true'))
++    service=CoverageService(sessions)
++    result=service.accept('验收记录-2026-09','operator:ops',True,True)
++    with sessions() as db:
++        assert db.get(SystemSetting,'coverage_invalidated') is None
++        assert json.loads(db.get(SystemSetting,'coverage_acceptance').value)['reference']=='验收记录-2026-09'
++        assert db.get(SyncJob,result['job_id']).type=='reconcile'
++        assert db.get(DatasetState,1).coverage_status!='complete'
++        assert list(db.scalars(select(ChangeLog)))[-1].object_id=='coverage_acceptance'
++    assert service.verified() is True
++
++
++def test_database_error_and_framework_routes_use_safe_json():
++    from app.main import app
++    from app.dependencies import get_public_identity,get_read_service
++    class Reads:
++        def status(self): raise OperationalError('SELECT secret',{'password':'sensitive'},Exception('sensitive'))
++    app.dependency_overrides[get_public_identity]=lambda: object()
++    app.dependency_overrides[get_read_service]=lambda: Reads()
++    try:
++        client=TestClient(app,raise_server_exceptions=False)
++        response=client.get('/api/v1/status')
++        assert response.status_code==503
++        assert response.json()['error']['code']=='DATABASE_UNAVAILABLE'
++        assert 'sensitive' not in response.text and 'SELECT' not in response.text
++        for response in (client.get('/nonexistent'),client.post('/health/live')):
++            assert response.status_code in (404,405)
++            assert 'error' in response.json()
++    finally:app.dependency_overrides.clear()
++
++
++def test_engine_hides_query_parameters_without_opening_database():
++    from app.persistence.database import create_mysql_engine
++    engine=create_mysql_engine('mysql+pymysql://unused:unused@localhost/unused')
++    try: assert engine.hide_parameters is True
++    finally:engine.dispose()
++
++
++def test_missing_field_error_code_survives_worker_failure(sessions):
++    from app.sync.worker import Worker,utcnow
++    from app.persistence.repositories import SqlSyncJobRepository
++    with sessions.begin() as db: db.add(WorkerLease(id=1,generation=0))
++    job,_=SqlSyncJobRepository(sessions).submit('full',None,'test',utcnow())
++    worker=Worker(sessions,None);worker.acquire(utcnow())
++    job=worker.jobs.claim_next(utcnow(),utcnow()+timedelta(minutes=2))
++    worker._fail_job(job,RuntimeError('FEISHU_PARENT_UNREADABLE'))
++    with sessions() as db: assert db.get(SyncJob,job.id).error_code=='FEISHU_PARENT_UNREADABLE'
++
++
++def test_coverage_audit_failure_rolls_back_marker_evidence_and_queue(sessions):
++    from app.sync.coverage import CoverageService
++    with sessions.begin() as db: db.add(SystemSetting(key='coverage_invalidated',value='true'))
++    def reject_audit(mapper,connection,target):
++        if target.object_id=='coverage_acceptance': raise RuntimeError('audit-failed')
++    event.listen(ChangeLog,'before_insert',reject_audit)
++    try:
++        with pytest.raises(RuntimeError,match='audit-failed'): CoverageService(sessions).accept('evidence','operator',True,True)
++    finally:event.remove(ChangeLog,'before_insert',reject_audit)
++    with sessions() as db:
++        assert db.get(SystemSetting,'coverage_invalidated') is not None
++        assert db.get(SystemSetting,'coverage_acceptance') is None
++        assert list(db.scalars(select(SyncJob)))==[]
++
++
++def test_pending_employee_publishes_after_authoritative_ancestor_resolution(sessions):
++    from app.persistence.models import PendingFact
++    employee=normalize_user({'user_id':'u','name':'员工','department_ids':['a'],'status':{'is_resigned':False}})
++    Publisher(sessions).publish(Candidate(employees={'u':employee},pending=[('department','a')]))
++    department={'id':'a','feishu_department_id':'a','parent_id':None,'name':'已确认部门','status':'active','sync_quality':'complete','is_virtual_root':False}
++    Publisher(sessions).publish(Candidate(departments={'a':department},employees={'u':employee}))
++    with sessions() as db:
++        assert db.get(Department,'a').name=='已确认部门'
++        assert db.get(EmployeeDepartment,('u','a')) is not None
++        assert list(db.scalars(select(PendingFact)))==[]
++
++
++def test_coverage_cli_uses_bound_config_and_outputs_queued_job(sessions,monkeypatch,capsys):
++    from app.sync.coverage import main
++    monkeypatch.setattr('app.dependencies.get_runtime',lambda:SimpleNamespace(sessions=sessions))
++    monkeypatch.setattr('app.config.get_settings',lambda:Settings(feishu_app_id='a',feishu_tenant_key='t'))
++    main(['--reference','accepted-2026','--actor','ops','--all-members-verified','--departmentless-verified'])
++    output=json.loads(capsys.readouterr().out)
++    assert output['status']=='queued'
++    with sessions() as db: assert db.get(SyncJob,output['job_id']) is not None
++
++
++def test_old_collection_cannot_restore_complete_after_new_acceptance(sessions):
++    from app.sync.coverage import CoverageService
++    CoverageService(sessions).accept('new-evidence','ops',True,True)
++    candidate=Candidate(full=True,coverage_status='complete')
++    Publisher(sessions).publish(candidate)
++    with sessions() as db: assert db.get(DatasetState,1).coverage_status=='unknown'
++
++
++def test_new_verified_collection_can_restore_complete(sessions):
++    from app.sync.coverage import CoverageService
++    CoverageService(sessions).accept('new-evidence','ops',True,True)
++    Publisher(sessions).publish(Candidate(full=True,coverage_status='complete',collection_started_at=datetime.now(timezone.utc).isoformat()))
++    with sessions() as db: assert db.get(DatasetState,1).coverage_status=='complete'
++
++
++def test_existing_department_with_unknown_new_parent_retains_fact_and_projects_unknown(sessions):
++    with sessions.begin() as db:
++        db.add(Department(id='a',feishu_department_id='a',name='真实部门',sync_quality='complete'));db.flush()
++        db.add(Employee(id='u',feishu_user_id='u',name='员工',primary_department_id='a',sync_quality='complete'));db.flush()
++        db.add(EmployeeDepartment(employee_id='u',department_id='a'))
++    department={'id':'a','feishu_department_id':'a','parent_id':'missing','name':'改名部门','status':'active','sync_quality':'complete','is_virtual_root':False}
++    Publisher(sessions).publish(Candidate(departments={'a':department},pending=[('department','missing')]))
++    with sessions() as db:
++        assert db.get(Department,'a').name=='真实部门'
++        assert db.get(Department,'a').parent_id is None
++        assert db.get(Employee,'u').primary_store_status=='unknown'
++
++```

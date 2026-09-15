@@ -1,0 +1,283 @@
+--- R1
++++ R2
+@@ -1,4 +1,123 @@
+-# Task 3 new-file review package (no Git baseline)
++# Task 3 R2 review package (no Git)
++
++## deploy/README.md
++```
++# 部署说明
++
++## 准备配置
++
++在项目根目录将 `.env.example` 复制为 `.env`，填写随机数据库密码、至少 32 字符的会话密钥、飞书企业自建应用信息和同应用初始管理员 `open_id`。数据库 URL 的密码与 `MYSQL_PASSWORD` 一致。部署地址需要 HTTPS，登录回调固定为 `/admin/auth/callback`。
++
++`.env` 不进入镜像或版本控制。MySQL 容器不映射公网端口，应用默认仅监听宿主机 `127.0.0.1:8000`，由部署方的 HTTPS 入口转发。
++
++```powershell
++Copy-Item -LiteralPath .env.example -Destination .env
++# 用本机编辑器填好 .env 后执行：
++docker compose up -d --build
++docker compose ps
++```
++
++Compose 先等待 MySQL 就绪，再运行 Alembic 迁移，迁移成功后启动应用。应用进程监督器负责 HTTP、同步 worker 与飞书长连接三个独立进程；任一必要进程意外退出时终止其余进程，由容器重启恢复。长连接回调仅快速持久入箱，远程回查由 worker 执行；启动和断线恢复后安排全量核对。
++
++## 飞书应用配置
++
++1. 配置通讯录部门和员工基础资料读取权限、主部门字段权限、全员通讯录范围与管理员登录权限。
++2. 订阅 `contact.department.created_v3`、`contact.department.updated_v3`、`contact.department.deleted_v3`、`contact.user.created_v3`、`contact.user.updated_v3`、`contact.user.deleted_v3` 及 `contact.scope.updated_v3` 七类事件。scope 更新事件用于立即使覆盖验收失效，必须实际订阅。
++3. 启用长连接；应用服务器允许出网访问飞书。登录重定向地址与部署 URL 保持一致。
++4. 使用实际授权样本验证根节点、无部门人员、全部分页和 `orders` 主部门标识，不将 SDK 字段存在当作企业联调完成。
++5. 首次登录必须属于受控初始白名单；禁止首个访问者自动成为管理员。
++
++## 一致性备份
++
++业务运行期间不执行数据库 DDL。下列命令示例在 Bash 环境执行；密码由容器内部环境传入，不打印秘密到日志：
++
++```bash
++mkdir -p backups
++docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction --routines --triggers --events --set-gtid-purged=OFF --no-tablespaces organization' > backups/organization.sql
++```
++
++备份文件包含员工资料、会话哈希和审计信息，应使用受限存储并加密备份。配置与密钥独立备份；备份轮换由部署方的受控任务实施。
++
++## 恢复演练
++
++恢复操作覆盖目标库，只在明确选择的恢复环境执行，并先停止应用。先保留目标库现状备份，再导入备份文件。恢复后、重新开放读 API 前必须：
++
++- 生成新的 `dataset_epoch`，禁止沿用备份中的旧世代。
++- 撤销旧会话，重新核验管理员资格。
++- 撤销备份恢复出的所有 API 凭据，避免已撤销凭据重新生效；重新生成并分发给下游。
++- 全量核对飞书，并确认本地门店标记、编码保留与备注。
++- 让下游按新世代重新拉取完整一致版本。
++
++导入完成且应用已停止后，执行以下命令完成上述世代与凭据重置（不执行备份导入）：
++
++```powershell
++docker compose stop app
++docker compose run --rm --no-deps app python -m deploy.recovery --application-stopped --actor "恢复责任人"
++docker compose up -d app
++```
++
++该命令以单事务重置世代、隔离旧事件与未完成任务、撤销 OAuth state/会话/API 凭据，并写审计。门店资料与来源事实保留；初始化变为 pending，全量核对成功前读取数据返回 503。责任人参数必须填写实际标识。
++
++如果备份中已无可用管理员，可在该命令中明确追加 `--admin-open-id ou_实际标识`，把经线下核验的同应用人员加入白名单并写审计。环境变量中的初始白名单只在首次初始化生效，重启不会自动恢复被删除的管理员。
++
++真实 MySQL 恢复演练尚未执行，不将本说明视为恢复已验证。
++
++### Bash 完整恢复导入顺序
++
++以下是需要人工核对恢复环境和备份文件后执行的操作顺序示例。不要在生产环境未经审批直接运行；`BACKUP_FILE` 与目标 Compose 项目必须先由恢复责任人确认。
++
++```bash
++set -euo pipefail
++
++# 1. 停止应用，避免导入期间产生写入
++docker compose stop app
++
++# 2. 明确并检查目标与输入文件
++BACKUP_FILE="backups/organization.sql"
++test -f "$BACKUP_FILE"
++docker compose ps mysql
++
++# 3. 导入前备份目标库现状
++mkdir -p backups/pre-restore
++docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction --routines --triggers --events --set-gtid-purged=OFF --no-tablespaces organization' > "backups/pre-restore/organization-$(date +%Y%m%d-%H%M%S).sql"
++
++# 4. 覆盖操作：仅在恢复责任人确认目标库为 organization 且上一步现状备份成功后，清空并重建目标库
++docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -e "DROP DATABASE IF EXISTS organization; CREATE DATABASE organization CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"'
++
++# 5. 导入已确认的 MySQL 备份
++docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot organization' < "$BACKUP_FILE"
++
++# 6. 执行当前版本迁移
++docker compose run --rm --no-deps app alembic upgrade head
++
++# 7. 生成新世代，撤销恢复出的会话/API 凭据并写审计
++docker compose run --rm --no-deps app python -m deploy.recovery --application-stopped --actor "恢复责任人"
++
++# 8. 重启并核对；全量核对成功前业务读取应保持 503
++docker compose up -d app
++docker compose ps
++curl --fail http://127.0.0.1:8000/health/live
++curl --fail http://127.0.0.1:8000/health/ready
++```
++
++重启后由管理员创建全量同步任务，确认新 `dataset_epoch`、初始化完成、覆盖验收状态和门店资料，再通知下游重新全量拉取。
++
++## 数据库集成测试
++
++`compose.mysql-test.yaml` 是可丢弃的独立本机测试环境，使用公开的测试密码和 tmpfs，不用于正式部署。用户提供数据库环境后执行真实 MySQL 事务、并发、迁移与恢复验证。
++# 覆盖权限重新验收
++
++通讯录 scope 变更后，覆盖状态降为 unknown。具备部署主机及数据库配置权限的运维人员完成真实企业验收（已发布应用的全员权限、无部门员工覆盖）后，在 `backend` 目录执行：
++
++```powershell
++./.venv/Scripts/python.exe -m app.sync.coverage --reference "企业验收记录-2026-09-15-02" --actor "operator:运维人员" --all-members-verified --departmentless-verified
++```
++
++Linux 使用部署环境的 `python -m app.sync.coverage`，参数相同。沿用 `ORG_DATABASE_URL/ORG_SESSION_SECRET/ORG_FEISHU_APP_ID/ORG_FEISHU_TENANT_KEY`；执行前先迁移到最新版本（含 `0003_pending_fact`）。reference 应为验收编号/摘要，不得填写 token/secret。
++
++CLI 将新依据、标记清除、审计与新全量核对任务同事务提交，返回 job_id。该命令不会把覆盖直接改为 complete；worker 后续采集成功才能恢复，旧在途采集不能恢复。无需修改或手工删除数据库行。此文档提供执行方式，本轮没有对真实环境执行。
++
++```
+ 
+ ## frontend/index.html
+ ```
+@@ -168,15 +287,12 @@
+ beforeEach(() => { vi.stubGlobal('matchMedia', () => ({ matches:false, addListener:vi.fn(), removeListener:vi.fn(), addEventListener:vi.fn(), removeEventListener:vi.fn() })); vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
+ afterEach(() => vi.unstubAllGlobals());
+ it('批量预览全部规范化 changes，并从预览弹窗确认提交', async () => {
+-  const calls: Array<{url:string;body:any}> = [];
+-  vi.stubGlobal('fetch', async (url:string, init:RequestInit) => { const body = JSON.parse(String(init.body)); calls.push({url,body}); if(url.endsWith('/preview')) return Response.json({data:{changes:body.changes,affected_employee_count:3},meta:{}}); return Response.json({data:{},meta:{}}); });
+-  render(<App><StoreEditor departments={departments} dataVersion={42} open onClose={()=>{}} onConflict={()=>{}} onSaved={()=>{}} /></App>);
+-  await userEvent.click(screen.getByRole('button',{name:'预览影响'})); expect(await screen.findByText('预计影响 3 位员工')).toBeTruthy(); await userEvent.click(screen.getByRole('button',{name:'确认提交'})); await waitFor(()=>expect(calls).toHaveLength(2)); expect(calls[0].body.changes).toHaveLength(2); expect(calls[1].body).toEqual({data_version:42,changes:calls[0].body.changes});
+-});
+-it('409 后保留表单并要求用新版本重新预览', async () => {
+-  let previewCount=0; const conflict=vi.fn(); const oneDepartment=[departments[0]];
+-  vi.stubGlobal('fetch', async (url:string, init:RequestInit) => { const body=JSON.parse(String(init.body)); if(url.endsWith('/preview')) { previewCount++; return Response.json({data:{changes:body.changes,affected_employee_count:1},meta:{}}); } return Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409}); });
+-  const {rerender}=render(<App><StoreEditor departments={oneDepartment} dataVersion={42} open onClose={()=>{}} onConflict={conflict} onSaved={()=>{}} /></App>); await userEvent.click(screen.getByRole('button',{name:'预览影响'})); await userEvent.click(await screen.findByRole('button',{name:'确认提交'})); await waitFor(()=>expect(conflict).toHaveBeenCalled()); rerender(<App><StoreEditor departments={oneDepartment} dataVersion={43} open onClose={()=>{}} onConflict={conflict} onSaved={()=>{}} /></App>); expect(await screen.findByText('数据已更新，请重新预览')).toBeTruthy(); expect(screen.getByDisplayValue('旧备注')).toBeTruthy(); expect(previewCount).toBe(1);
++  const calls:any[]=[]; vi.stubGlobal('fetch', async (url:string, init:RequestInit) => { const body=JSON.parse(String(init.body)); calls.push({url,body}); return url.endsWith('/preview') ? Response.json({data:{changes:body.changes,affected_employee_count:3},meta:{}}) : Response.json({data:{},meta:{}}); });
++  render(<App><StoreEditor departments={departments} dataVersion={42} open onClose={()=>{}} onConflict={()=>{}} onSaved={()=>{}} /></App>); await userEvent.click(screen.getByRole('button',{name:'预览影响'})); await userEvent.click(await screen.findByRole('button',{name:'确认提交'})); await waitFor(()=>expect(calls).toHaveLength(2)); expect(calls[1].body.changes).toHaveLength(2);
++});
++it('真实父刷新后保留两项草稿，并用新版本重新预览', async () => {
++  const previews:any[]=[]; const conflict=vi.fn(); vi.stubGlobal('fetch', async (url:string, init:RequestInit) => { const body=JSON.parse(String(init.body)); if(url.endsWith('/preview')) { previews.push(body); return Response.json({data:{changes:body.changes,affected_employee_count:1},meta:{}}); } return Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409}); });
++  const {rerender}=render(<App><StoreEditor departments={departments} dataVersion={42} open onClose={()=>{}} onConflict={conflict} onSaved={()=>{}} /></App>); const notes=screen.getByDisplayValue('旧备注'); await userEvent.clear(notes); await userEvent.type(notes,'用户修改必须保留'); await userEvent.click(screen.getByRole('button',{name:'预览影响'})); await userEvent.click(await screen.findByRole('button',{name:'确认提交'})); await waitFor(()=>expect(conflict).toHaveBeenCalled()); rerender(<App><StoreEditor departments={departments.map(x=>({...x,notes:'服务器旧备注'}))} dataVersion={43} open onClose={()=>{}} onConflict={conflict} onSaved={()=>{}} /></App>); expect(screen.getByDisplayValue('用户修改必须保留')).toBeTruthy(); const retry=screen.getByText('预览影响').closest('button')!; await waitFor(()=>expect(retry.disabled).toBe(false)); await userEvent.click(retry); await waitFor(()=>expect(previews).toHaveLength(2)); expect(previews[1].data_version).toBe(43); expect(previews[1].changes).toHaveLength(2); expect(previews[1].changes[0].notes).toBe('用户修改必须保留');
+ });
+ 
+ ```
+@@ -198,7 +314,7 @@
+   const [previewOpen, setPreviewOpen] = useState(false);
+   const [busy, setBusy] = useState(false);
+   const [conflict, setConflict] = useState(false);
+-  useEffect(() => { if (open) { form.setFieldsValue({ changes: departments.map(item => ({ department_id: item.id, is_store: item.is_store, store_code: item.store_code, notes: item.notes })) }); setPreview(null); setConflict(false); } }, [departments, form, open]);
++  useEffect(() => { if (open) { form.setFieldsValue({ changes: departments.map(item => ({ department_id: item.id, is_store: item.is_store, store_code: item.store_code, notes: item.notes })) }); setPreview(null); setConflict(false); } }, [form, open]);
+   const fingerprint = useMemo(() => stableFingerprint(values?.changes ?? []), [values]);
+   const previewValid = Boolean(preview && preview.version === dataVersion && preview.fingerprint === fingerprint);
+   async function buildPreview() { if (dataVersion === undefined) return; const { changes } = await form.validateFields(); setBusy(true); setConflict(false); try { const result = await request<{ changes: StoreChange[]; affected_employee_count: number }>('/admin/api/stores/batch/preview', { method: 'POST', body: { data_version: dataVersion, changes } }); form.setFieldsValue({ changes: result.data.changes }); setPreview({ changes: result.data.changes, affectedEmployeeCount: result.data.affected_employee_count, version: dataVersion, fingerprint: stableFingerprint(result.data.changes) }); setPreviewOpen(true); } catch (error) { message.error(error instanceof Error ? error.message : '预览失败'); } finally { setBusy(false); } }
+@@ -273,6 +389,28 @@
+ import { ResourceState } from '../components/ResourceState';
+ import { PageHeader } from '../components/PageHeader';
+ export function EmployeePage() { const { id } = useParams(); const nav = useNavigate(); const resource = useResource<Employee>(id ? `/admin/api/employees/${encodeURIComponent(id)}` : null); const employee = resource.data; return <><PageHeader title="人员详情" description="解释部门关系、全部门店与唯一主门店的派生结果。" extra={<Button icon={<ArrowLeftOutlined />} onClick={() => nav('/organization')}>返回组织</Button>} /><ResourceState {...resource}>{employee ? <div className="detail-grid"><Card><Descriptions title={employee.name} column={{ xs: 1, md: 2 }} items={[{ key: 'id', label: '员工 ID', children: employee.id }, { key: 'status', label: '状态', children: <Tag>{statusLabel(employee.status)}</Tag> }, { key: 'resolution', label: '主门店解析', children: primaryStoreLabel(employee.primary_store_status) }, { key: 'primary', label: '主门店 ID', children: employee.primary_store_id ?? '—' }]} /><Result status={employee.primary_store_status === 'resolved' ? 'success' : 'info'} title={primaryStoreLabel(employee.primary_store_status)} subTitle="主门店仅由唯一飞书主部门向上寻找最近门店派生；数组顺序不代表主归属。" /></Card><Card title="部门关系"><Table size="small" pagination={false} rowKey="id" dataSource={employee.departments} columns={[{ title: '部门', dataIndex: 'name' }, { title: '部门 ID', dataIndex: 'id' }, { title: '关系', render: (_, row) => row.id === employee.primary_department_id ? <Tag color="blue">主部门</Tag> : '兼任部门' }]} /></Card><Card title="全部门店归属"><Table size="small" pagination={false} rowKey="id" dataSource={employee.stores} columns={[{ title: '门店', dataIndex: 'name' }, { title: '门店 ID', dataIndex: 'id' }, { title: '归属', dataIndex: 'is_primary', render: value => value ? <Tag color="blue">主门店</Tag> : '其他门店' }]} /></Card></div> : null}</ResourceState></>; }
++
++```
++
++## frontend/src/pages/LogsPage.test.tsx
++```
++import { App } from 'antd';
++import { render, screen, waitFor } from '@testing-library/react';
++import userEvent from '@testing-library/user-event';
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
++import { LogsPage } from './LogsPage';
++beforeEach(() => { vi.stubGlobal('matchMedia', () => ({ matches:false, addListener:vi.fn(), removeListener:vi.fn(), addEventListener:vi.fn(), removeEventListener:vi.fn() })); vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
++afterEach(() => vi.unstubAllGlobals());
++it('按真实飞书来源、操作和操作者发出日志查询并可重置', async () => {
++  const urls:string[]=[]; const user=userEvent.setup({pointerEventsCheck:0});
++  vi.stubGlobal('fetch', async (url:string) => { urls.push(url); return Response.json({data:[],meta:{next_cursor:null}}); });
++  render(<App><LogsPage /></App>); await waitFor(()=>expect(urls.length).toBeGreaterThan(0));
++  await user.type(screen.getByPlaceholderText('操作'),'更新'); await user.type(screen.getByPlaceholderText('操作者'),'ou_actor');
++  await user.click(screen.getAllByRole('combobox')[1]); const choices=await screen.findAllByText('飞书同步'); await user.click(choices[choices.length-1]);
++  await user.click(screen.getByRole('button',{name:/查\s*询/}));
++  await waitFor(()=>expect(urls.at(-1)).toContain('source=feishu')); expect(urls.at(-1)).toContain('action=%E6%9B%B4%E6%96%B0'); expect(urls.at(-1)).toContain('actor=ou_actor');
++  await user.click(screen.getByRole('button',{name:/重\s*置/})); await waitFor(()=>expect(urls.at(-1)).toBe('/admin/api/change-logs?limit=100'));
++});
+ 
+ ```
+ 
+@@ -293,14 +431,50 @@
+   const logs = useAllResource<ChangeLog>('/admin/api/change-logs' + query({ ...filters, limit: 100 }));
+   function search(values: FilterForm) { const { time, ...rest } = values; setFilters({ ...Object.fromEntries(Object.entries(rest).filter(([, value]) => value).map(([key, value]) => [key, String(value)])), ...(time ? { committed_after: time[0].toDate().toISOString(), committed_before: time[1].toDate().toISOString() } : {}) }); }
+   function reset() { form.resetFields(); setFilters({}); }
+-  return <><PageHeader title="变更日志" description="按对象、操作、操作者、任务和时间查找已提交差异。" /><Card><Form form={form} layout="inline" onFinish={search}><Form.Item name="object_id"><Input placeholder="对象 ID" /></Form.Item><Form.Item name="object_type"><Select allowClear placeholder="对象类型" style={{ width: 140 }} options={['department','employee','store','api_client','admin'].map(value => ({ value, label: value }))} /></Form.Item><Form.Item name="action"><Input placeholder="操作" /></Form.Item><Form.Item name="source"><Select allowClear placeholder="操作来源" style={{ width: 140 }} options={[{ value: 'admin', label: '管理员' }, { value: 'sync', label: '飞书同步' }]} /></Form.Item><Form.Item name="actor"><Input placeholder="操作者" /></Form.Item><Form.Item name="job_id"><Input placeholder="任务 ID" /></Form.Item><Form.Item name="time"><DatePicker.RangePicker showTime /></Form.Item><Form.Item><Space><Button type="primary" htmlType="submit">查询</Button><Button onClick={reset}>重置</Button></Space></Form.Item></Form><ResourceState {...logs} empty={!logs.data?.length}><Table className="block-gap" rowKey="id" dataSource={logs.data ?? []} pagination={{ pageSize: 20 }} scroll={{ x: 900 }} columns={[{ title: '提交时间', dataIndex: 'committed_at', render: formatTime }, { title: '对象', render: (_, row) => row.object_name ?? `${row.object_type ?? ''} ${row.object_id ?? ''}` }, { title: '操作', dataIndex: 'action' }, { title: '来源 / 操作者', render: (_, row) => row.actor ?? row.actor_open_id ?? row.source ?? '—' }, { title: '任务', dataIndex: 'job_id', render: value => value || '—' }, { title: '操作', render: (_, row) => <Button type="link" onClick={() => setSelected(row)}>查看差异</Button> }]} /></ResourceState></Card><Drawer title="差异详情" open={Boolean(selected)} onClose={() => setSelected(null)} size={720}>{selected && <><Descriptions column={1} items={[{ key: 'object', label: '对象', children: selected.object_name ?? selected.object_id }, { key: 'time', label: '提交时间', children: formatTime(selected.committed_at) }, { key: 'actor', label: '来源 / 操作者', children: selected.actor ?? selected.actor_open_id ?? selected.source ?? '—' }]} /><div className="diff-grid"><Card size="small" title="修改前"><pre>{JSON.stringify(selected.before, null, 2)}</pre></Card><Card size="small" title="修改后"><pre>{JSON.stringify(selected.after, null, 2)}</pre></Card></div></>}</Drawer></>;
+-}
++  const filtersForm = <Form form={form} layout="inline" onFinish={search}>
++    <Form.Item name="object_id"><Input placeholder="对象 ID" /></Form.Item>
++    <Form.Item name="object_type"><Select allowClear placeholder="对象类型" style={{ width: 140 }} options={['department','employee','store','api_client','admin'].map(value => ({ value, label: value }))} /></Form.Item>
++    <Form.Item name="action"><Input placeholder="操作" /></Form.Item>
++    <Form.Item name="source"><Select allowClear placeholder="操作来源" style={{ width: 140 }} onChange={value => form.setFieldValue('source', value)} options={[{ value:'admin', label:'管理员' }, { value:'feishu', label:'飞书同步' }]} /></Form.Item>
++    <Form.Item name="actor"><Input placeholder="操作者" /></Form.Item><Form.Item name="job_id"><Input placeholder="任务 ID" /></Form.Item>
++    <Form.Item name="time"><DatePicker.RangePicker showTime /></Form.Item><Form.Item><Space><Button type="primary" htmlType="submit">查询</Button><Button onClick={reset}>重置</Button></Space></Form.Item>
++  </Form>;
++  return <><PageHeader title="变更日志" description="按对象、操作、操作者、任务和时间查找已提交差异。" /><Card>{filtersForm}<ResourceState {...logs} empty={!logs.data?.length}><Table className="block-gap" rowKey="id" dataSource={logs.data ?? []} pagination={{ pageSize:20 }} scroll={{ x:900 }} columns={[{ title:'提交时间', dataIndex:'committed_at', render:formatTime }, { title:'对象', render:(_,row)=>row.object_name ?? `${row.object_type ?? ''} ${row.object_id ?? ''}` }, { title:'操作', dataIndex:'action' }, { title:'来源 / 操作者', render:(_,row)=>row.actor ?? row.actor_open_id ?? row.source ?? '—' }, { title:'任务', dataIndex:'job_id', render:value=>value || '—' }, { title:'操作', render:(_,row)=><Button type="link" onClick={()=>setSelected(row)}>查看差异</Button> }]} /></ResourceState></Card><Drawer title="差异详情" open={Boolean(selected)} onClose={()=>setSelected(null)} size={720}>{selected && <><Descriptions column={1} items={[{ key:'object', label:'对象', children:selected.object_name ?? selected.object_id }, { key:'time', label:'提交时间', children:formatTime(selected.committed_at) }, { key:'actor', label:'来源 / 操作者', children:selected.actor ?? selected.actor_open_id ?? selected.source ?? '—' }]} /><div className="diff-grid"><Card size="small" title="修改前"><pre>{JSON.stringify(selected.before,null,2)}</pre></Card><Card size="small" title="修改后"><pre>{JSON.stringify(selected.after,null,2)}</pre></Card></div></>}</Drawer></>;
++}
++
++```
++
++## frontend/src/pages/OrganizationPage.test.tsx
++```
++import { App } from 'antd';
++import { MemoryRouter } from 'react-router-dom';
++import { render, screen, waitFor } from '@testing-library/react';
++import userEvent from '@testing-library/user-event';
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
++import { OrganizationPage } from './OrganizationPage';
++const department = { id:'d1', parent_id:null, name:'总部', path:['总部'], status:'active', sync_quality:'complete', is_virtual_root:false, is_store:false, store_code:null, notes:null };
++beforeEach(() => { vi.stubGlobal('matchMedia', () => ({ matches:false, addListener:vi.fn(), removeListener:vi.fn(), addEventListener:vi.fn(), removeEventListener:vi.fn() })); vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
++afterEach(() => vi.unstubAllGlobals());
++it('子资源冲突后重读父子整组，且从不发送无版本员工请求', async () => {
++  const employeeUrls:string[]=[]; let departmentReads=0; let employeeReads=0;
++  vi.stubGlobal('fetch', async (url:string) => {
++    if(url.startsWith('/admin/api/departments')) { departmentReads++; const version=departmentReads===1?1:2; return Response.json({data:[department],meta:{dataset_epoch:'epoch',data_version:version,next_cursor:null}}); }
++    if(url.startsWith('/admin/api/employees')) { employeeUrls.push(url); employeeReads++; if(employeeReads<=3) return Response.json({error:{code:'DATASET_CHANGED',message:'changed'}},{status:409}); return Response.json({data:[],meta:{dataset_epoch:'epoch',data_version:2,next_cursor:null}}); }
++    throw new Error(url);
++  });
++  render(<App><MemoryRouter><OrganizationPage /></MemoryRouter></App>); await userEvent.click(await screen.findByText('总部')); await waitFor(()=>expect(departmentReads).toBe(2)); await waitFor(()=>expect(employeeUrls.some(url=>url.includes('data_version=2'))).toBe(true)); expect(employeeUrls.every(url=>url.includes('dataset_epoch=epoch')&&url.includes('data_version='))).toBe(true);
++});
++it('搜索深层节点保留并展开祖先，清除搜索后树仍可操作', async () => {
++  const rows=[department,{...department,id:'d2',parent_id:'d1',name:'区域'},{...department,id:'d3',parent_id:'d2',name:'人民路店'}];
++  vi.stubGlobal('fetch', async (url:string) => url.startsWith('/admin/api/departments') ? Response.json({data:rows,meta:{dataset_epoch:'e',data_version:1,next_cursor:null}}) : Response.json({data:[],meta:{dataset_epoch:'e',data_version:1,next_cursor:null}}));
++  render(<App><MemoryRouter><OrganizationPage /></MemoryRouter></App>); const search=await screen.findByPlaceholderText('搜索部门名称或 ID'); await userEvent.type(search,'人民路'); expect(await screen.findByText('总部')).toBeTruthy(); expect(screen.getByText('区域')).toBeTruthy(); expect(screen.getByText('人民路店')).toBeTruthy(); await userEvent.clear(search); await userEvent.click(screen.getByText('区域')); expect(screen.getByText('人民路店')).toBeTruthy();
++});
+ 
+ ```
+ 
+ ## frontend/src/pages/OrganizationPage.tsx
+ ```
+-import { useMemo, useState } from 'react';
++import { useEffect, useMemo, useState } from 'react';
+ import { App, Button, Card, Drawer, Input, Radio, Space, Table, Tag, Tree, Typography } from 'antd';
+ import { EditOutlined, MenuOutlined, ShopOutlined, SyncOutlined, UserOutlined } from '@ant-design/icons';
+ import { useNavigate } from 'react-router-dom';
+@@ -320,12 +494,14 @@
+   const departments = useAllResource<Department>('/admin/api/departments?include_inactive=true&limit=200');
+   const [selected, setSelected] = useState<string>(); const [checked, setChecked] = useState<React.Key[]>([]); const [search, setSearch] = useState(''); const [descendants, setDescendants] = useState(false); const [editorOpen, setEditorOpen] = useState(false); const [treeOpen, setTreeOpen] = useState(false); const [syncing, setSyncing] = useState(false);
+   const versionQuery = { dataset_epoch: departments.meta.dataset_epoch, data_version: departments.meta.data_version };
+-  const employees = useAllResource<Employee>(selected ? '/admin/api/employees' + query({ department_id: selected, include_descendants: descendants, limit: 200, ...versionQuery }) : null);
++  const versionReady = Boolean(departments.data && departments.meta.dataset_epoch && departments.meta.data_version !== undefined);
++  const employees = useAllResource<Employee>(selected && versionReady ? '/admin/api/employees' + query({ department_id: selected, include_descendants: descendants, limit: 200, ...versionQuery }) : null);
++  useEffect(() => { if (employees.error?.code === 'DATASET_CHANGED') departments.reload(); }, [employees.error?.code, departments.reload]);
+   const { visible, hits, expanded } = useMemo(() => { const all = departments.data ?? []; if (!search) return { visible: all, hits: new Set<string>(), expanded: [] as string[] }; const matched = all.filter(d => `${d.name} ${d.id}`.toLowerCase().includes(search.toLowerCase())); const hitIds = new Set(matched.map(d => d.id)); const keep = new Set(hitIds); matched.forEach(d => { let parent = d.parent_id; while (parent) { keep.add(parent); parent = all.find(x => x.id === parent)?.parent_id ?? null; } }); return { visible: all.filter(d => keep.has(d.id)), hits: hitIds, expanded: [...keep] }; }, [departments.data, search]);
+   const current = departments.data?.find(d => d.id === selected); const edited = (departments.data ?? []).filter(d => checked.map(String).includes(d.id));
+   function select(keys: React.Key[]) { setSelected(keys[0] ? String(keys[0]) : undefined); if (narrow) setTreeOpen(false); }
+   async function subtreeSync() { if (!selected) return; setSyncing(true); try { const r = await request<{ job_id: string; reused?: boolean }>('/admin/api/sync/jobs', { method: 'POST', body: { type: 'subtree', root_department_id: selected } }); message.success(r.data.reused ? `复用任务 #${r.data.job_id}` : `已创建任务 #${r.data.job_id}`); navigate(`/sync?job=${encodeURIComponent(r.data.job_id)}`); } catch (e) { message.error(e instanceof Error ? e.message : '创建任务失败'); } finally { setSyncing(false); } }
+-  const tree = <Card title="部门树" extra={<Tag>{departments.data?.length ?? 0} 个部门</Tag>}><Input.Search allowClear placeholder="搜索部门名称或 ID" value={search} onChange={e => setSearch(e.target.value)} /><ResourceState {...departments} empty={!visible.length}><Tree className="org-tree" blockNode checkable checkStrictly showLine defaultExpandAll={!search} expandedKeys={search ? expanded : undefined} treeData={makeTree(visible, hits)} checkedKeys={checked} selectedKeys={selected ? [selected] : []} onCheck={keys => setChecked(Array.isArray(keys) ? keys : keys.checked)} onSelect={select} /></ResourceState></Card>;
++  const tree = <Card title="部门树" extra={<Tag>{departments.data?.length ?? 0} 个部门</Tag>}><Input.Search allowClear placeholder="搜索部门名称或 ID" value={search} onChange={e => setSearch(e.target.value)} /><ResourceState {...departments} empty={!visible.length}><Tree className="org-tree" blockNode checkable checkStrictly showLine defaultExpandAll={!search} {...(search ? { expandedKeys: expanded } : {})} treeData={makeTree(visible, hits)} checkedKeys={checked} selectedKeys={selected ? [selected] : []} onCheck={keys => setChecked(Array.isArray(keys) ? keys : keys.checked)} onSelect={select} /></ResourceState></Card>;
+   return <><PageHeader title="组织架构" description="浏览飞书组织事实，独立选择部门并维护门店属性。" extra={<Space wrap><Button className="tree-trigger" icon={<MenuOutlined />} onClick={() => setTreeOpen(true)}>选择部门</Button><Button type="primary" disabled={!checked.length} onClick={() => setEditorOpen(true)}>批量设置（{checked.length}）</Button></Space>} /><div className="org-grid"><div className="tree-panel">{tree}</div><Card title={current?.name ?? '请选择部门'} extra={current && <Space><Button icon={<SyncOutlined />} loading={syncing} onClick={subtreeSync}>更新此部门及后代</Button><Button icon={<EditOutlined />} onClick={() => { setChecked([current.id]); setEditorOpen(true); }}>编辑门店资料</Button></Space>}><Space className="toolbar" wrap><Radio.Group value={descendants} onChange={e => setDescendants(e.target.value)} options={[{ label: '仅直属人员', value: false }, { label: '包含全部后代', value: true }]} />{current?.is_store && <Tag icon={<ShopOutlined />} color="blue">{current.store_code || '门店'}</Tag>}</Space>{!selected ? <Typography.Text type="secondary">选择部门以查看人员。</Typography.Text> : <ResourceState {...employees} empty={!employees.data?.length}><Table rowKey="id" dataSource={employees.data ?? []} pagination={{ pageSize: 20 }} scroll={{ x: 720 }} columns={[{ title: '姓名', dataIndex: 'name', render: (value, row) => <Button type="link" icon={<UserOutlined />} onClick={() => navigate(`/employees/${encodeURIComponent(row.id)}`)}>{value}</Button> }, { title: '员工 ID', dataIndex: 'id' }, { title: '状态', dataIndex: 'status', render: status => statusLabel(status) }, { title: '主门店状态', dataIndex: 'primary_store_status', render: primaryStoreLabel }]} /></ResourceState>}</Card></div><Drawer className="tree-drawer" title="选择部门" placement="left" size={360} open={treeOpen} onClose={() => setTreeOpen(false)}>{tree}</Drawer><StoreEditor departments={edited} dataVersion={departments.meta.data_version} open={editorOpen} onClose={() => setEditorOpen(false)} onConflict={departments.reload} onSaved={() => { departments.reload(); employees.reload(); }} /></>;
+ }
+ 
+@@ -361,7 +537,7 @@
+ 
+ ## frontend/src/pages/StoresPage.tsx
+ ```
+-import { useMemo, useState } from 'react';
++import { useEffect, useMemo, useState } from 'react';
+ import { Button, Card, Drawer, Input, Radio, Space, Switch, Table, Tag } from 'antd';
+ import type { Employee, Store } from '../domain';
+ import { statusLabel } from '../domain';
+@@ -373,7 +549,9 @@
+ export function StoresPage() {
+   const [search, setSearch] = useState(''); const [inactive, setInactive] = useState(false); const [editing, setEditing] = useState<Store | null>(null); const [viewing, setViewing] = useState<Store | null>(null); const [membership, setMembership] = useState<'all'|'primary'>('all');
+   const stores = useAllResource<Store>('/admin/api/stores' + query({ include_inactive: inactive, limit: 200 }));
+-  const people = useAllResource<Employee>(viewing ? `/admin/api/stores/${encodeURIComponent(viewing.id)}/employees` + query({ membership, include_inactive: true, limit: 200, dataset_epoch: stores.meta.dataset_epoch, data_version: stores.meta.data_version }) : null);
++  const versionReady = Boolean(stores.data && stores.meta.dataset_epoch && stores.meta.data_version !== undefined);
++  const people = useAllResource<Employee>(viewing && versionReady ? `/admin/api/stores/${encodeURIComponent(viewing.id)}/employees` + query({ membership, include_inactive: true, limit: 200, dataset_epoch: stores.meta.dataset_epoch, data_version: stores.meta.data_version }) : null);
++  useEffect(() => { if (people.error?.code === 'DATASET_CHANGED') stores.reload(); }, [people.error?.code, stores.reload]);
+   const data = useMemo(() => (stores.data ?? []).filter(s => `${s.name} ${s.store_code ?? ''}`.toLowerCase().includes(search.toLowerCase())), [stores.data, search]);
+   return <><PageHeader title="门店管理" description="维护门店编码和备注，并查看门店归属员工。" /><Card><Space className="toolbar" wrap><Input.Search allowClear placeholder="搜索门店名称或编码" onChange={e => setSearch(e.target.value)} /><span>包含失效门店 <Switch checked={inactive} onChange={setInactive} /></span></Space><ResourceState {...stores} empty={!data.length}><Table rowKey="id" dataSource={data} pagination={{ pageSize: 20 }} scroll={{ x: 900 }} columns={[{ title: '门店', dataIndex: 'name' }, { title: '编码', dataIndex: 'store_code', render: v => v || '—' }, { title: '路径', dataIndex: 'path', render: v => v.join(' / ') }, { title: '全部归属人数', dataIndex: 'employee_count' }, { title: '主门店人数', dataIndex: 'primary_employee_count' }, { title: '状态', dataIndex: 'status', render: v => <Tag color={v === 'active' ? 'success' : v === 'inactive' ? 'default' : 'warning'}>{statusLabel(v)}</Tag> }, { title: '操作', fixed: 'right', render: (_, row) => <Space><Button type="link" onClick={() => setViewing(row)}>查看员工</Button><Button type="link" onClick={() => setEditing(row)}>编辑</Button></Space> }]} /></ResourceState></Card><Drawer title={`${viewing?.name ?? ''} · 归属员工`} open={Boolean(viewing)} onClose={() => setViewing(null)} size={720}><Radio.Group className="toolbar" value={membership} onChange={e => setMembership(e.target.value)} options={[{ label: '全部归属', value: 'all' }, { label: '主门店归属', value: 'primary' }]} /><ResourceState {...people} empty={!people.data?.length}><Table rowKey="id" dataSource={people.data ?? []} pagination={{ pageSize: 20 }} columns={[{ title: '姓名', dataIndex: 'name' }, { title: '员工 ID', dataIndex: 'id' }, { title: '状态', dataIndex: 'status', render: statusLabel }]} /></ResourceState></Drawer>{editing && <StoreEditor departments={[editing]} dataVersion={stores.meta.data_version} open onClose={() => setEditing(null)} onConflict={stores.reload} onSaved={stores.reload} />}</>;
+ }
+@@ -749,3 +927,4 @@
+ });
+ 
+ ```
++

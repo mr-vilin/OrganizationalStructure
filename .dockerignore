@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+.cache
+.tools
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.pip-cache
+**/*.egg-info
+**/dist
+backups
+docs/ui

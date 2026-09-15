@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "organization-directory-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx==0.28.1",
+  "lark-oapi==1.7.3",
+  "alembic==1.16.5",
+  "fastapi==0.116.1",
+  "pydantic-settings==2.10.1",
+  "PyMySQL[rsa]==1.1.2",
+  "SQLAlchemy==2.0.43",
+  "uvicorn==0.35.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "httpx==0.28.1",
+  "pytest==8.4.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]

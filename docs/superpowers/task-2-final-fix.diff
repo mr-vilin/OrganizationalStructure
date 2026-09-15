@@ -1,0 +1,349 @@
+--- R2
++++ Finalfix
+@@ -1,4 +1,4 @@
+-# Task 2 R2 review package (no Git)
++# Task 2 final fix review package (no Git)
+ 
+ ## backend/alembic.ini
+ ```
+@@ -240,7 +240,7 @@
+         page = rows[:limit]
+         data = [{"id": row.id, "object_type": row.object_type, "object_id": row.object_id, "source": row.source, "actor": row.actor, "job_id": row.job_id, "before": row.before_data, "after": row.after_data, "committed_at": utc_datetime(row.committed_at)} for row in page]
+         for item in data: item['action']='create' if item['before'] is None else 'delete' if item['after'] is None else 'update'
+-        return {"data": data, "meta": {"next_cursor": page[-1].id if len(rows) > limit else None}}
++        return {"data": data, "meta": {"next_cursor": str(page[-1].id) if len(rows) > limit else None}}
+ 
+ 
+ @router.get('/sync/events')
+@@ -514,6 +514,8 @@
+         department = departments.get(current_id)
+         if department is None:
+             return None, False
++        if department.status!='active':
++            return None, False
+         if department.sync_quality in {"pending_verification", "unknown", "inconsistent"}:
+             return None, False
+         if department.status == "active" and department.is_store:
+@@ -546,6 +548,8 @@
+         return StoreResolution(stores, None, "inconsistent")
+     if primary is None:
+         return StoreResolution(stores, None, "unknown")
++    if primary in departments and departments[primary].status!='active':
++        return StoreResolution(stores,None,'unknown')
+     if primary not in active_department_ids:
+         return StoreResolution(stores, None, "inconsistent")
+     primary_store, complete = _nearest_store(primary, departments)
+@@ -2175,7 +2179,7 @@
+                 while current is not None and current not in visited:
+                     visited.add(current)
+                     department = departments.get(current)
+-                    if department is None or department.sync_quality in {'unknown', 'pending_verification', 'inconsistent'}:
++                    if department is None or department.status!='active' or department.sync_quality in {'unknown', 'pending_verification', 'inconsistent'}:
+                         break
+                     path.append(current)
+                     if current in result.store_ids:
+@@ -2242,12 +2246,16 @@
+ 
+ 
+ def normalize_department(raw):
+-    if not isinstance(raw.get('parent_department_id'),str) or not raw['parent_department_id']:
+-        raise RuntimeError('FEISHU_PARENT_UNREADABLE')
+     if not isinstance(raw.get('status'),dict) or type(raw['status'].get('is_deleted')) is not bool:
+         raise RuntimeError('FEISHU_STATUS_UNREADABLE')
+     identifier = raw["open_department_id"]
+-    return {"id": identifier, "feishu_department_id": identifier, "parent_id": raw.get("parent_department_id") or "0", "name": raw["name"], "status": "inactive" if raw.get("status", {}).get("is_deleted") is True else "active", "sync_quality": "complete", "is_virtual_root": False}
++    if not isinstance(identifier,str) or not identifier: raise RuntimeError('FEISHU_ID_MISMATCH')
++    parent_readable=isinstance(raw.get('parent_department_id'),str) and bool(raw['parent_department_id'])
++    inactive=raw['status']['is_deleted']
++    if not parent_readable and not inactive: raise RuntimeError('FEISHU_PARENT_UNREADABLE')
++    value={"id": identifier, "feishu_department_id": identifier, "parent_id": raw['parent_department_id'] if parent_readable else None, "name": raw["name"], "status": "inactive" if inactive else "active", "sync_quality": "complete" if parent_readable else 'pending_verification', "is_virtual_root": False}
++    if not parent_readable:value['parent_unreadable']=True
++    return value
+ 
+ 
+ class Collector:
+@@ -2258,6 +2266,11 @@
+     def _progress(self,phase,result):
+         if self.progress:
+             self.progress(phase=phase,departments_processed=len(result.departments),employees_processed=len(result.employees),departments_total=None,employees_total=None)
++
++    def _department(self,identifier):
++        raw=self.api.detail('department',identifier)
++        if raw.get('open_department_id')!=identifier:raise RuntimeError('FEISHU_ID_MISMATCH')
++        return normalize_department(raw)
+ 
+     def collect(self, root=None, previous_departments=(), previous_users=()):
+         result = Candidate(full=root is None,collection_started_at=datetime.now(timezone.utc).isoformat())
+@@ -2278,7 +2291,10 @@
+                 continue
+             visited.add(identifier)
+             if identifier != "0":
+-                result.departments[identifier] = normalize_department(self.api.detail("department", identifier))
++                result.departments[identifier] = self._department(identifier)
++                if result.departments[identifier]['status']=='inactive':
++                    self._progress('departments',result)
++                    continue
+             for page in self.api.pages("children", department_id=identifier):
+                 queue.extend(item["open_department_id"] for item in page.get("items", []))
+             for page in self.api.pages("users", department_id=identifier):
+@@ -2286,7 +2302,7 @@
+             self._progress('departments',result)
+         for identifier in set(previous_departments)-set(result.departments)-{'0'}:
+             try:
+-                result.departments[identifier]=normalize_department(self.api.detail('department',identifier))
++                result.departments[identifier]=self._department(identifier)
+             except RuntimeError:
+                 result.pending.append(('department',identifier))
+         for identifier in sorted(users):
+@@ -2318,7 +2334,7 @@
+                 result.departments['0'] = {'id':'0','feishu_department_id':'0','parent_id':None,'name':'组织','status':'active','sync_quality':'complete','is_virtual_root':True}
+                 continue
+             try:
+-                department = normalize_department(self.api.detail("department", identifier))
++                department = self._department(identifier)
+                 result.departments[identifier] = department
+                 if department["parent_id"]:
+                     queue.append(department["parent_id"])
+@@ -2331,7 +2347,7 @@
+             self._user(result, identifier)
+         else:
+             try:
+-                result.departments[identifier] = normalize_department(self.api.detail("department", identifier))
++                result.departments[identifier] = self._department(identifier)
+             except RuntimeError:
+                 result.pending.append(("department", identifier))
+         self._ancestors(result)
+@@ -2457,7 +2473,12 @@
+                 ready = [key for key, value in remaining.items() if not value['parent_id'] or value['parent_id'] not in remaining]
+                 if not ready: raise RuntimeError('DEPARTMENT_CYCLE')
+                 for key in ready:
+-                    changes += self._upsert(db, Department, remaining.pop(key), 'department', job_id, now)
++                    value=remaining.pop(key)
++                    if value.get('lifecycle_only'):
++                        changes+=self._upsert(db,Department,{'id':key,'status':'inactive','sync_quality':'pending_verification'},'department',job_id,now)
++                    else:
++                        changes += self._upsert(db, Department, value, 'department', job_id, now)
++                    if value['status']=='inactive':changes+=self._end_department_memberships(db,key,job_id,now)
+                 db.flush()
+             parents={row.id:row.parent_id for row in db.scalars(select(Department))}
+             for identifier in parents:
+@@ -2476,7 +2497,7 @@
+                 db.flush()
+                 if value['status']=='inactive': self._revoke_employee_sessions(db,value['feishu_user_id'],job_id,now)
+                 before = {(r.department_id, r.is_primary, r.active) for r in db.scalars(select(EmployeeDepartment).where(EmployeeDepartment.employee_id == key))}
+-                after = {(d, d == value['primary_department_id'], value['status'] == 'active') for d in value['department_ids']}
++                after = {(d, d == value['primary_department_id'], value['status'] == 'active' and db.get(Department,d).status=='active') for d in value['department_ids']}
+                 if before != after:
+                     db.execute(delete(EmployeeDepartment).where(EmployeeDepartment.employee_id == key))
+                     for department, primary, active in after:
+@@ -2526,13 +2547,16 @@
+         # 父引用缺失时递归延后依赖它的部门；已有部门保留原父引用。
+         while True:
+             available=known|set(departments)
+-            blocked={key for key,value in departments.items() if value['parent_id'] and value['parent_id'] not in available}
++            blocked={key for key,value in departments.items() if value.get('parent_unreadable') or value['parent_id'] and value['parent_id'] not in available}
+             if not blocked: break
+             for key in blocked:
+                 value=departments.pop(key)
+                 deferred[('department',key)]=value
+                 pending.add(('department',key))
+-                pending.add(('department',value['parent_id']))
++                if value['parent_id']:pending.add(('department',value['parent_id']))
++                if value['status']=='inactive' and key in known:
++                    existing=db.get(Department,key)
++                    departments[key]={'id':key,'parent_id':existing.parent_id,'status':'inactive','lifecycle_only':True}
+         available=known|set(departments)
+         for key,value in list(employees.items()):
+             references=set(value['department_ids'] or [])
+@@ -2554,6 +2578,13 @@
+                 if (kind,identifier) not in pending:
+                     db.execute(delete(PendingFact).where(PendingFact.object_type==kind,PendingFact.source_id==identifier))
+         return replace(candidate,departments=departments,employees=employees,pending=sorted(pending))
++
++    def _end_department_memberships(self,db,department_id,job_id,now):
++        relations=list(db.scalars(select(EmployeeDepartment).where(EmployeeDepartment.department_id==department_id,EmployeeDepartment.active.is_(True))))
++        for relation in relations:
++            relation.active=False
++            self._log(db,'membership',relation.employee_id,{'department_id':department_id,'active':True},{'department_id':department_id,'active':False},job_id,now)
++        return len(relations)
+ 
+     def _publish_inactive_lifecycle(self,db,value,job_id,now):
+         """可信离职独立生效；未解析的新关系仍隔离，历史资料不覆盖。"""
+@@ -3621,6 +3652,48 @@
+ 
+ ```
+ 
++## backend/tests/test_log_pagination_http.py
++```
++from datetime import datetime
++from types import SimpleNamespace
++from sqlalchemy import create_engine,event
++from sqlalchemy.orm import sessionmaker
++from sqlalchemy.pool import StaticPool
++from test_sync_persistence import sqlite_integer
++from app.persistence.models import Base,ChangeLog
++from app.dependencies import get_admin_identity,get_runtime
++from app.main import app
++from fastapi.testclient import TestClient
++
++
++def test_http_log_cursor_is_string_and_all_pages_have_no_gaps():
++    engine=create_engine('sqlite://',poolclass=StaticPool,connect_args={'check_same_thread':False})
++    @event.listens_for(engine,'connect')
++    def configure(connection,_):
++        connection.create_collation('utf8mb4_bin',lambda a,b:(a>b)-(a<b))
++    Base.metadata.create_all(engine)
++    sessions=sessionmaker(engine,expire_on_commit=False)
++    with sessions.begin() as db:
++        for index in range(1,206):
++            db.add(ChangeLog(id=index,object_type='department',object_id=str(index),source='feishu',actor='sync',before_data=None,after_data={'name':str(index)},committed_at=datetime(2026,9,15)))
++    app.dependency_overrides[get_admin_identity]=lambda:SimpleNamespace(open_id='admin')
++    app.dependency_overrides[get_runtime]=lambda:SimpleNamespace(sessions=sessions)
++    try:
++        client=TestClient(app)
++        ids=[];cursor=None
++        for page in range(3):
++            response=client.get('/admin/api/change-logs',params={'limit':100,**({'cursor':cursor} if cursor else {})})
++            assert response.status_code==200 and response.headers['content-type'].startswith('application/json')
++            body=response.json();ids.extend(item['id'] for item in body['data'])
++            cursor=body['meta']['next_cursor']
++            assert cursor is None or isinstance(cursor,str)
++        assert cursor is None
++        assert ids==list(range(205,0,-1))
++    finally:
++        app.dependency_overrides.clear();engine.dispose()
++
++```
++
+ ## backend/tests/test_mysql_schema.py
+ ```
+ from sqlalchemy.dialects import mysql
+@@ -4121,6 +4194,128 @@
+ 
+ ```
+ 
++## backend/tests/test_task2_department_lifecycle.py
++```
++import pytest
++from sqlalchemy import select,event
++from test_sync_persistence import sessions
++from test_task2_review_fixes import seed_admin
++from app.persistence.models import Department,Employee,EmployeeDepartment,EmployeeStore,StoreProfile,AdminSession,ChangeLog,DatasetState,PendingFact
++from app.sync.collector import Candidate,Collector,normalize_department,normalize_user
++from app.sync.publisher import Publisher
++from app.stores.service import StoreAdminService
++
++
++def seed(sessions):
++    seed_admin(sessions)
++    with sessions.begin() as db:
++        for identifier,parent in [('s',None),('d','s'),('child','d'),('part',None)]:
++            db.add(Department(id=identifier,feishu_department_id=identifier,name=identifier,parent_id=parent,sync_quality='complete'));db.flush()
++        db.add(StoreProfile(department_id='s',is_store=True))
++        db.add(StoreProfile(department_id='part',is_store=True))
++        db.get(Employee,'u').primary_department_id='d'
++        db.add(EmployeeDepartment(employee_id='u',department_id='d',is_primary=True))
++        db.add(EmployeeDepartment(employee_id='u',department_id='part'))
++        db.add(Employee(id='v',feishu_user_id='v',name='子部门员工',primary_department_id='child',sync_quality='complete'));db.flush()
++        db.add(EmployeeDepartment(employee_id='v',department_id='child',is_primary=True));db.flush()
++        StoreAdminService._rebuild_projection(db)
++
++
++def deleted(parent='s'):
++    return normalize_department({'open_department_id':'d','name':'新的名字','parent_department_id':parent,'status':{'is_deleted':True}})
++
++
++@pytest.mark.parametrize('parent',['s','missing',None])
++def test_department_delete_ends_only_direct_relationship_and_does_not_revoke_employee(sessions,parent):
++    seed(sessions)
++    Publisher(sessions).publish(Candidate(departments={'d':deleted(parent)}))
++    with sessions() as db:
++        assert db.get(Department,'d').status=='inactive'
++        assert db.get(EmployeeDepartment,('u','d')).active is False
++        assert db.get(EmployeeDepartment,('u','part')).active is True
++        assert db.get(Employee,'u').status=='active'
++        assert db.get(AdminSession,'session').revoked_at is None
++        assert db.get(EmployeeStore,('u','s')) is None
++        assert db.get(EmployeeStore,('u','part')) is not None
++        assert db.get(EmployeeStore,('v','s')) is None
++        assert db.get(Department,'child').status=='active'
++        assert db.get(Employee,'v').primary_store_status=='unknown'
++        if parent!='s':
++            assert db.get(Department,'d').parent_id=='s'
++            assert db.get(Department,'d').name=='d'
++
++
++def test_employee_recheck_does_not_reactivate_deleted_department_until_explicit_restore(sessions):
++    seed(sessions)
++    Publisher(sessions).publish(Candidate(departments={'d':deleted()}))
++    user=normalize_user({'user_id':'u','name':'员工','department_ids':['d','part'],'orders':[{'department_id':'d','is_primary_dept':True}],'status':{'is_resigned':False}})
++    Publisher(sessions).publish(Candidate(employees={'u':user}))
++    with sessions() as db:assert db.get(EmployeeDepartment,('u','d')).active is False
++    restored=normalize_department({'open_department_id':'d','name':'d','parent_department_id':'s','status':{'is_deleted':False}})
++    Publisher(sessions).publish(Candidate(departments={'d':restored}))
++    with sessions() as db:assert db.get(EmployeeDepartment,('u','d')).active is False
++    Publisher(sessions).publish(Candidate(employees={'u':user}))
++    with sessions() as db:assert db.get(EmployeeDepartment,('u','d')).active is True
++
++
++@pytest.mark.parametrize('raw',[
++    {'open_department_id':'d','name':'d','parent_department_id':'s'},
++    {'open_department_id':'d','name':'d','status':{'is_deleted':False}},
++    {'open_department_id':'different','name':'d','parent_department_id':'s','status':{'is_deleted':True}},
++])
++def test_missing_fields_or_wrong_source_never_guess_department_deletion(sessions,raw):
++    seed(sessions)
++    class API:
++        def detail(self,kind,identifier): return raw
++    Publisher(sessions).publish(Collector(API()).event('contact.department.deleted_v3','d'))
++    with sessions() as db:
++        assert db.get(Department,'d').status=='active'
++        assert db.get(EmployeeDepartment,('u','d')).active is True
++        assert db.get(AdminSession,'session').revoked_at is None
++
++
++def test_department_delete_relation_audit_failure_rolls_back_all(sessions):
++    seed(sessions)
++    def reject(mapper,connection,target):
++        if target.object_type=='membership':raise RuntimeError('audit-failed')
++    event.listen(ChangeLog,'before_insert',reject)
++    try:
++        with pytest.raises(RuntimeError,match='audit-failed'):Publisher(sessions).publish(Candidate(departments={'d':deleted()}))
++    finally:event.remove(ChangeLog,'before_insert',reject)
++    with sessions() as db:
++        assert db.get(Department,'d').status=='active'
++        assert db.get(EmployeeDepartment,('u','d')).active is True
++        assert db.get(EmployeeStore,('u','s')) is not None
++        assert db.get(DatasetState,1).data_version==1
++
++
++def test_repeated_inactive_detail_does_not_increment_version(sessions):
++    seed(sessions)
++    candidate=Candidate(departments={'d':deleted('missing')})
++    Publisher(sessions).publish(candidate)
++    with sessions() as db:first=db.get(DatasetState,1).data_version
++    Publisher(sessions).publish(candidate)
++    with sessions() as db:assert db.get(DatasetState,1).data_version==first
++
++
++def test_valid_other_membership_path_does_not_cross_deleted_ancestor(sessions):
++    seed(sessions)
++    with sessions.begin() as db:db.add(EmployeeDepartment(employee_id='v',department_id='s'))
++    Publisher(sessions).publish(Candidate(departments={'d':deleted()}))
++    with sessions() as db:
++        assert db.get(EmployeeStore,('v','s')).path==['s']
++        assert db.get(EmployeeStore,('v','s')).is_primary is False
++
++
++def test_new_deleted_department_without_parent_stays_pending_not_fake_root(sessions):
++    value=normalize_department({'open_department_id':'new','name':'删除部门','status':{'is_deleted':True}})
++    Publisher(sessions).publish(Candidate(departments={'new':value}))
++    with sessions() as db:
++        assert db.get(Department,'new') is None
++        assert db.get(PendingFact,('department','new')).normalized_data['status']=='inactive'
++
++```
++
+ ## backend/tests/test_task2_inactive_relations.py
+ ```
+ from datetime import datetime

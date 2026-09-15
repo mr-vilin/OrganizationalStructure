@@ -1,0 +1,249 @@
+--- R1
++++ R2
+@@ -1,4 +1,4 @@
+-# Task2 backend snapshot, no Git baseline
++# Task 2 R2 review package (no Git)
+ 
+ ## backend/alembic.ini
+ ```
+@@ -2225,17 +2225,20 @@
+ 
+ 
+ def normalize_user(raw):
+-    if not isinstance(raw.get('department_ids'),list) or any(not isinstance(d,str) or not d for d in raw['department_ids']):
+-        raise RuntimeError('FEISHU_MEMBERSHIP_UNREADABLE')
+     status=raw.get('status')
+     if not isinstance(status,dict) or not any(type(status.get(key)) is bool for key in ('is_resigned','is_exited')):
+         raise RuntimeError('FEISHU_STATUS_UNREADABLE')
++    inactive=status.get('is_resigned') is True or status.get('is_exited') is True
++    relations_readable=isinstance(raw.get('department_ids'),list) and all(isinstance(d,str) and d for d in raw['department_ids'])
++    if not relations_readable and not inactive:
++        raise RuntimeError('FEISHU_MEMBERSHIP_UNREADABLE')
+     identifier = raw["user_id"]
+-    departments = list(dict.fromkeys(raw.get("department_ids") or []))
+-    primaries = {order["department_id"] for order in raw.get("orders", []) if order.get("is_primary_dept") is True and order.get("department_id")}
++    if not isinstance(identifier,str) or not identifier: raise RuntimeError('FEISHU_ID_MISMATCH')
++    departments = list(dict.fromkeys(raw['department_ids'])) if relations_readable else None
++    primaries = {order["department_id"] for order in (raw.get("orders") or []) if isinstance(order,dict) and order.get("is_primary_dept") is True and order.get("department_id")} if relations_readable else set()
+     primary = next(iter(primaries)) if len(primaries) == 1 else None
+     inconsistent = len(primaries) > 1 or (primary is not None and primary not in departments)
+-    return {"id": identifier, "feishu_user_id": identifier, "open_id": raw.get("open_id"), "name": raw["name"], "employee_no": raw.get("employee_no"), "status": "inactive" if raw.get("status", {}).get("is_resigned") is True or raw.get("status", {}).get("is_exited") is True else "active", "primary_department_id": primary if not inconsistent else None, "sync_quality": "inconsistent" if inconsistent else "complete", "department_ids": departments}
++    return {"id": identifier, "feishu_user_id": identifier, "open_id": raw.get("open_id"), "name": raw["name"], "employee_no": raw.get("employee_no"), "status": "inactive" if inactive else "active", "primary_department_id": primary if not inconsistent else None, "sync_quality": "pending_verification" if not relations_readable else "inconsistent" if inconsistent else "complete", "department_ids": departments}
+ 
+ 
+ def normalize_department(raw):
+@@ -2296,13 +2299,15 @@
+ 
+     def _user(self, result, identifier):
+         try:
+-            result.employees[identifier] = normalize_user(self.api.detail("user", identifier))
++            raw=self.api.detail('user',identifier)
++            if raw.get('user_id')!=identifier: raise RuntimeError('FEISHU_ID_MISMATCH')
++            result.employees[identifier] = normalize_user(raw)
+         except RuntimeError:
+             result.pending.append(("employee", identifier))
+ 
+     def _ancestors(self, result):
+         queue = [d["parent_id"] for d in result.departments.values() if d["parent_id"]]
+-        queue.extend(d for u in result.employees.values() for d in u["department_ids"])
++        queue.extend(d for u in result.employees.values() for d in (u['department_ids'] or []))
+         visited = set(result.departments)
+         while queue:
+             identifier = queue.pop()
+@@ -2463,6 +2468,9 @@
+                     visited.add(current)
+                     current=parents.get(current)
+             for key, value in candidate.employees.items():
++                if value.get('lifecycle_only'):
++                    changes+=self._publish_inactive_lifecycle(db,value,job_id,now)
++                    continue
+                 fields = {k: v for k, v in value.items() if k != 'department_ids'}
+                 changes += self._upsert(db, Employee, fields, 'employee', job_id, now)
+                 db.flush()
+@@ -2527,10 +2535,14 @@
+                 pending.add(('department',value['parent_id']))
+         available=known|set(departments)
+         for key,value in list(employees.items()):
+-            references=set(value['department_ids'])
++            references=set(value['department_ids'] or [])
+             if value['primary_department_id']: references.add(value['primary_department_id'])
+-            if references-available:
+-                deferred[('employee',key)]=employees.pop(key)
++            if value['department_ids'] is None or references-available:
++                deferred[('employee',key)]=value
++                if value['status']=='inactive':
++                    employees[key]={**value,'lifecycle_only':True}
++                else:
++                    employees.pop(key)
+                 pending.add(('employee',key))
+                 pending.update(('department',identifier) for identifier in references-available)
+         for kind,identifier in pending:
+@@ -2539,8 +2551,31 @@
+             db.merge(PendingFact(object_type=kind,source_id=identifier,normalized_data=value,error_code='PENDING_VERIFICATION',updated_at=now))
+         for kind,records in [('department',departments),('employee',employees)]:
+             for identifier in records:
+-                db.execute(delete(PendingFact).where(PendingFact.object_type==kind,PendingFact.source_id==identifier))
++                if (kind,identifier) not in pending:
++                    db.execute(delete(PendingFact).where(PendingFact.object_type==kind,PendingFact.source_id==identifier))
+         return replace(candidate,departments=departments,employees=employees,pending=sorted(pending))
++
++    def _publish_inactive_lifecycle(self,db,value,job_id,now):
++        """可信离职独立生效；未解析的新关系仍隔离，历史资料不覆盖。"""
++        row=db.get(Employee,value['id'])
++        if row is None:
++            fields={k:v for k,v in value.items() if k not in {'department_ids','lifecycle_only'}}
++            fields['primary_department_id']=None
++        else:
++            fields={'id':row.id,'status':'inactive'}
++        fields['sync_quality']='pending_verification'
++        changes=self._upsert(db,Employee,fields,'employee',job_id,now)
++        db.flush()
++        relations=list(db.scalars(select(EmployeeDepartment).where(EmployeeDepartment.employee_id==value['id'])))
++        before=sorted((r.department_id,r.is_primary,r.active) for r in relations)
++        changed=any(r.active for r in relations)
++        for relation in relations: relation.active=False
++        if changed:
++            after=sorted((r.department_id,r.is_primary,False) for r in relations)
++            self._log(db,'membership',value['id'],{'relations':before},{'relations':after},job_id,now)
++            changes+=1
++        self._revoke_employee_sessions(db,value['feishu_user_id'],job_id,now)
++        return changes
+ 
+     @staticmethod
+     def _revoke_employee_sessions(db,user_id,job_id,now):
+@@ -4086,6 +4121,130 @@
+ 
+ ```
+ 
++## backend/tests/test_task2_inactive_relations.py
++```
++from datetime import datetime
++import pytest
++from sqlalchemy import select,event
++from test_sync_persistence import sessions
++from test_task2_review_fixes import seed_admin
++from app.sync.collector import Candidate,Collector,normalize_user
++from app.sync.publisher import Publisher
++from app.persistence.models import Department,Employee,EmployeeDepartment,EmployeeStore,StoreProfile,AdminSession,PendingFact,ChangeLog,DatasetState
++
++
++def seed_relations(sessions):
++    seed_admin(sessions)
++    with sessions.begin() as db:
++        db.add(Department(id='old',feishu_department_id='old',name='旧部门',sync_quality='complete'));db.flush()
++        db.add(StoreProfile(department_id='old',is_store=True))
++        db.get(Employee,'u').primary_department_id='old'
++        db.add(EmployeeDepartment(employee_id='u',department_id='old',is_primary=True))
++        db.add(EmployeeStore(employee_id='u',store_id='old',is_primary=True,path=['old']))
++
++
++def inactive():
++    return normalize_user({'user_id':'u','name':'上游新姓名','department_ids':['missing'],'status':{'is_resigned':True}})
++
++
++def test_confirmed_inactive_with_unreadable_department_revokes_and_ends_current_relations(sessions):
++    seed_relations(sessions)
++    Publisher(sessions).publish(Candidate(employees={'u':inactive()},pending=[('department','missing')]))
++    with sessions() as db:
++        assert db.get(Employee,'u').status=='inactive'
++        assert db.get(Employee,'u').name=='员工'
++        assert db.get(EmployeeDepartment,('u','old')).active is False
++        assert db.get(EmployeeStore,('u','old')) is None
++        assert db.get(AdminSession,'session').revoked_at is not None
++        assert db.get(Department,'missing') is None
++        assert db.get(PendingFact,('employee','u')).normalized_data['department_ids']==['missing']
++
++
++def test_missing_membership_field_does_not_discard_explicit_inactive(sessions):
++    seed_relations(sessions)
++    class API:
++        def detail(self,kind,identifier): return {'user_id':'u','name':'员工','status':{'is_exited':True}}
++    candidate=Collector(API()).event('contact.user.updated_v3','u')
++    Publisher(sessions).publish(candidate)
++    with sessions() as db:
++        assert db.get(Employee,'u').status=='inactive'
++        assert db.get(AdminSession,'session').revoked_at is not None
++        assert db.get(EmployeeDepartment,('u','old')).active is False
++
++
++@pytest.mark.parametrize('raw',[
++    {'user_id':'u','name':'员工','department_ids':[]},
++    {'user_id':'u','name':'员工','status':{'is_resigned':'true'}},
++    {'user_id':'other','name':'员工','status':{'is_resigned':True}},
++])
++def test_unreadable_lifecycle_or_wrong_source_id_cannot_revoke(sessions,raw):
++    seed_relations(sessions)
++    class API:
++        def detail(self,kind,identifier):return raw
++    Publisher(sessions).publish(Collector(API()).event('contact.user.deleted_v3','u'))
++    with sessions() as db:
++        assert db.get(Employee,'u').status=='active'
++        assert db.get(AdminSession,'session').revoked_at is None
++        assert db.get(EmployeeDepartment,('u','old')).active is True
++
++
++@pytest.mark.parametrize('failure_target',['membership','security'])
++def test_inactive_relations_and_revocation_roll_back_on_audit_failure(sessions,failure_target):
++    seed_relations(sessions)
++    def reject(mapper,connection,target):
++        if target.object_type==failure_target: raise RuntimeError('injected-audit-failure')
++    event.listen(ChangeLog,'before_insert',reject)
++    try:
++        with pytest.raises(RuntimeError,match='injected-audit-failure'):
++            Publisher(sessions).publish(Candidate(employees={'u':inactive()},pending=[('department','missing')]))
++    finally:event.remove(ChangeLog,'before_insert',reject)
++    with sessions() as db:
++        assert db.get(Employee,'u').status=='active'
++        assert db.get(EmployeeDepartment,('u','old')).active is True
++        assert db.get(EmployeeStore,('u','old')) is not None
++        assert db.get(AdminSession,'session').revoked_at is None
++        assert db.get(DatasetState,1).data_version==1
++
++
++def test_new_inactive_employee_with_incomplete_relations_has_no_fake_department(sessions):
++    Publisher(sessions).publish(Candidate(employees={'u':inactive()},pending=[('department','missing')]))
++    with sessions() as db:
++        employee=db.get(Employee,'u')
++        assert employee is not None and employee.status=='inactive'
++        assert employee.primary_department_id is None
++        assert list(db.scalars(select(Department)))==[]
++        assert list(db.scalars(select(EmployeeDepartment)))==[]
++
++
++def test_parent_field_missing_does_not_block_user_exit(sessions):
++    seed_relations(sessions)
++    class API:
++        def detail(self,kind,identifier):
++            if kind=='user':return {'user_id':'u','name':'员工','department_ids':['new'],'status':{'is_resigned':True}}
++            return {'open_department_id':'new','name':'新部门','status':{'is_deleted':False}}
++    Publisher(sessions).publish(Collector(API()).event('contact.user.updated_v3','u'))
++    with sessions() as db:
++        assert db.get(Employee,'u').status=='inactive'
++        assert db.get(Department,'new') is None
++        assert db.get(AdminSession,'session').revoked_at is not None
++
++
++def test_relation_write_failure_rolls_back_employee_and_sessions(sessions):
++    seed_relations(sessions)
++    def reject(mapper,connection,target):raise RuntimeError('relation-failed')
++    event.listen(EmployeeDepartment,'before_update',reject)
++    try:
++        with pytest.raises(RuntimeError,match='relation-failed'):
++            Publisher(sessions).publish(Candidate(employees={'u':inactive()},pending=[('department','missing')]))
++    finally:event.remove(EmployeeDepartment,'before_update',reject)
++    with sessions() as db:
++        assert db.get(Employee,'u').status=='active'
++        assert db.get(EmployeeDepartment,('u','old')).active is True
++        assert db.get(AdminSession,'session').revoked_at is None
++        assert db.get(DatasetState,1).data_version==1
++
++```
++
+ ## backend/tests/test_task2_review_fixes.py
+ ```
+ import json
+@@ -4304,3 +4463,4 @@
+         assert db.get(Employee,'u').primary_store_status=='unknown'
+ 
+ ```
++
