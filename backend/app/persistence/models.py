@@ -70,6 +70,7 @@ class Department(Base):
     feishu_department_id: Mapped[str] = mapped_column(SOURCE_ID, unique=True)
     parent_id: Mapped[str | None] = mapped_column(SOURCE_ID, ForeignKey("department.id"))
     name: Mapped[str] = mapped_column(String(255))
+    leader_user_id: Mapped[str | None] = mapped_column(SOURCE_ID, comment="部门负责人对应的飞书用户稳定标识")
     status: Mapped[str] = mapped_column(String(32), default="active")
     sync_quality: Mapped[str] = mapped_column(String(32), default="unknown")
     is_virtual_root: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -84,6 +85,14 @@ class Employee(Base):
     open_id: Mapped[str | None] = mapped_column(SOURCE_ID, unique=True)
     name: Mapped[str] = mapped_column(String(255))
     employee_no: Mapped[str | None] = mapped_column(String(128))
+    employee_type_id: Mapped[str | None] = mapped_column(SOURCE_ID, comment="员工类型枚举选项稳定标识")
+    employee_type_name: Mapped[str | None] = mapped_column(String(255), comment="员工类型枚举当前展示值")
+    job_title: Mapped[str | None] = mapped_column(String(255), comment="员工当前职务")
+    leader_user_id: Mapped[str | None] = mapped_column(SOURCE_ID, comment="直属上级对应的飞书用户稳定标识")
+    permission_role_id: Mapped[str | None] = mapped_column(SOURCE_ID, comment="权限角色自定义字段选项标识")
+    permission_role_name: Mapped[str | None] = mapped_column(String(255), comment="权限角色自定义字段展示值")
+    store_attribute_id: Mapped[str | None] = mapped_column(SOURCE_ID, comment="门店属性自定义字段选项标识")
+    store_attribute_name: Mapped[str | None] = mapped_column(String(255), comment="门店属性自定义字段展示值")
     status: Mapped[str] = mapped_column(String(32), default="active")
     sync_quality: Mapped[str] = mapped_column(String(32), default="unknown")
     primary_department_id: Mapped[str | None] = mapped_column(SOURCE_ID, ForeignKey("department.id"))
@@ -134,6 +143,7 @@ class FeishuConnection(Base):
     app_id: Mapped[str] = mapped_column(SOURCE_ID)
     status: Mapped[str] = mapped_column(String(32))
     coverage_status: Mapped[str] = mapped_column(String(32), default="unknown")
+    custom_attrs: Mapped[dict] = mapped_column(JSON, default=dict, comment="按飞书连接保存的自定义字段映射与选项定义")
     __table_args__ = TABLE_ARGS
 
 
@@ -168,18 +178,45 @@ class SyncJob(Base):
     __tablename__ = "sync_job"
     id: Mapped[str] = mapped_column(SOURCE_ID, primary_key=True)
     type: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str | None] = mapped_column(String(255), comment="同步任务名称")
+    trigger_source: Mapped[str | None] = mapped_column(String(32), comment="任务触发来源")
+    description: Mapped[str | None] = mapped_column(Text, comment="同步任务业务说明")
     root_department_id: Mapped[str | None] = mapped_column(SOURCE_ID)
     requested_by: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(32), index=True)
     phase: Mapped[str | None] = mapped_column(String(64))
     attempt: Mapped[int] = mapped_column(Integer, default=1)
+    execution_count: Mapped[int] = mapped_column(Integer, default=0, comment="任务执行次数")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, comment="任务重试次数")
+    total_count: Mapped[int | None] = mapped_column(Integer, comment="任务对象总数，未知时为空")
+    success_count: Mapped[int] = mapped_column(Integer, default=0, comment="任务成功对象数")
+    failure_count: Mapped[int] = mapped_column(Integer, default=0, comment="任务失败对象数")
     lease_generation: Mapped[int] = mapped_column(Integer, default=0)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="任务开始时间")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="任务结束时间")
     __table_args__ = (Index("ix_sync_job_scope", "type", "root_department_id", "status"), TABLE_ARGS)
+
+
+class SyncJobDetail(Base):
+    __tablename__ = "sync_job_detail"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="任务明细自增标识")
+    job_id: Mapped[str] = mapped_column(SOURCE_ID, ForeignKey("sync_job.id"), index=True)
+    object_type: Mapped[str] = mapped_column(String(32), comment="任务对象类型")
+    object_id: Mapped[str] = mapped_column(SOURCE_ID, comment="任务对象稳定标识")
+    object_name: Mapped[str | None] = mapped_column(String(255), comment="任务对象名称快照")
+    status: Mapped[str] = mapped_column(String(32), comment="对象处理状态")
+    error_code: Mapped[str | None] = mapped_column(String(64), comment="对象错误编码")
+    error_message: Mapped[str | None] = mapped_column(Text, comment="对象错误摘要")
+    attempt: Mapped[int] = mapped_column(Integer, default=1, comment="对象处理尝试次数")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="对象处理开始时间")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="对象处理结束时间")
+    change_log_id: Mapped[int | None] = mapped_column(BigInteger, comment="关联变更日志标识")
+    __table_args__ = (UniqueConstraint("job_id", "object_type", "object_id", name="uq_sync_job_detail_object"), TABLE_ARGS)
 
 
 class EventInbox(Base):

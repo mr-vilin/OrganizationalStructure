@@ -5,7 +5,8 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
-from app.persistence.models import WorkerLease, SyncJob, EventInbox, SystemSetting, Department, Employee, EmployeeDepartment, PendingFact
+from app.persistence.models import WorkerLease, SyncJob, EventInbox, SystemSetting, DatasetState, Department, Employee, EmployeeDepartment, PendingFact, ChangeLog, SyncStaging
+from app.sync.collector import Candidate
 from app.persistence.repositories import SqlSyncJobRepository
 from app.sync.publisher import Publisher
 from app.sync.settings import ScheduleService
@@ -67,7 +68,10 @@ class Worker:
                 if hasattr(self.collector,'progress'): self.collector.progress=self._progress
                 root=job.root_department_id if job.type == 'subtree' else None
                 previous_departments,previous_users=self._previous_scope(root)
-                candidate = self.collector.collect(root,previous_departments=previous_departments,previous_users=previous_users)
+                candidate = self._staged_candidate(job)
+                if candidate is None:
+                    candidate = self.collector.collect(root,previous_departments=previous_departments,previous_users=previous_users)
+                    self._stage_candidate(job.id, candidate)
                 with self.sessions() as db:
                     if db.get(SystemSetting,'coverage_invalidated'): candidate.coverage_status='unknown'
                 self.publisher.publish(candidate, job.id, job.lease_generation, owner=self.owner, lease_generation=self.generation)
@@ -79,6 +83,10 @@ class Worker:
         with self.sessions() as db:
             event = db.scalar(select(EventInbox).where(EventInbox.status == 'queued').order_by(EventInbox.received_at, EventInbox.event_id).limit(1))
         if event:
+            with self.sessions() as db:
+                state = db.get(DatasetState, 1)
+                if state is None or state.initialization_status != 'complete':
+                    return True
             try:
                 self._refresh_coverage()
                 if event.event_type == 'contact.scope.updated_v3':
@@ -90,6 +98,32 @@ class Worker:
                 self._fail_event(event.event_id)
             return True
         return False
+
+    def _stage_candidate(self, job_id, candidate):
+        """在发布事务前保存规范化候选，供进程中断后的诊断和恢复使用。"""
+        from app.persistence.models import SyncStaging
+        with self.sessions.begin() as db:
+            for kind, records in [('department', candidate.departments), ('employee', candidate.employees)]:
+                for identifier, value in records.items():
+                    db.merge(SyncStaging(job_id=job_id, object_type=kind, source_id=identifier, normalized_data=value))
+            for kind, identifier in candidate.pending:
+                db.merge(SyncStaging(job_id=job_id, object_type=kind, source_id=identifier, normalized_data={'pending': True}))
+
+    def _staged_candidate(self, job):
+        """恢复已有规范化候选；没有完整检查点时返回 None 触发重新采集。"""
+        with self.sessions() as db:
+            rows = list(db.scalars(select(SyncStaging).where(SyncStaging.job_id == job.id)))
+        if not rows:
+            return None
+        result = Candidate(full=job.type != 'subtree')
+        for row in rows:
+            if row.normalized_data == {'pending': True}:
+                result.pending.append((row.object_type, row.source_id))
+            elif row.object_type == 'department':
+                result.departments[row.source_id] = row.normalized_data
+            elif row.object_type == 'employee':
+                result.employees[row.source_id] = row.normalized_data
+        return result
 
     def _refresh_coverage(self):
         from app.sync.coverage import CoverageService
@@ -143,8 +177,11 @@ class Worker:
             row.error_detail = None
             row.phase, row.updated_at = 'collection_failed', now
             row.status = 'queued' if row.attempt < 5 else 'failed'
+            if row.status == 'queued':
+                row.retry_count = (row.retry_count or 0) + 1
             row.lease_expires_at = now+timedelta(seconds=min(900, 15 * 2 ** row.attempt)) if row.status == 'queued' else None
             row.attempt += 1 if row.status == 'queued' else 0
+            db.add(ChangeLog(object_type='sync_job', object_id=row.id, source='worker', actor=self.owner, job_id=row.id, before_data={'status': 'running'}, after_data={'status': row.status, 'error_code': row.error_code, 'attempt': row.attempt}, committed_at=now))
 
 
 def main():
@@ -158,11 +195,12 @@ def main():
     from app.feishu.binding import bind_connection
     bind_connection(runtime.sessions,settings.feishu_app_id,settings.feishu_tenant_key)
     verified = bool(settings.coverage_all_members_verified and settings.coverage_departmentless_verified and settings.coverage_acceptance_reference.strip())
-    worker = Worker(runtime.sessions, Collector(FeishuClient(settings.feishu_app_id, settings.feishu_app_secret.get_secret_value()), verified))
+    from app.feishu.binding import custom_attrs
+    mappings = custom_attrs(runtime.sessions)
+    worker = Worker(runtime.sessions, Collector(FeishuClient(settings.feishu_app_id, settings.feishu_app_secret.get_secret_value()), verified, custom_mappings=mappings, employee_type_options=set((mappings.get('employee_type_options') or {}).keys())))
     stop = threading.Event()
     while not worker.acquire(utcnow()): time.sleep(5)
     worker.recover(utcnow())
-    runtime.jobs.submit('reconcile', None, 'worker:startup', utcnow())
     def heartbeat():
         while not stop.wait(30):
             try:

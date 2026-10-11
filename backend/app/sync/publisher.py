@@ -1,8 +1,8 @@
 import uuid
 import json
 from datetime import datetime, timezone
-from sqlalchemy import delete, select
-from app.persistence.models import DatasetState, Department, Employee, EmployeeDepartment, SyncJob, SyncStaging, ChangeLog, EventInbox, SystemSetting, WorkerLease, PendingFact, LoginIdentity, AdminSession
+from sqlalchemy import delete, select, func
+from app.persistence.models import DatasetState, Department, Employee, EmployeeDepartment, SyncJob, SyncJobDetail, SyncStaging, ChangeLog, EventInbox, SystemSetting, WorkerLease, PendingFact, LoginIdentity, AdminSession
 from app.stores.service import StoreAdminService
 
 
@@ -23,15 +23,17 @@ class Publisher:
                 raise ValueError('STALE_LEASE')
             candidate=self._defer_unresolved(db,candidate,now)
             if job:
-                db.execute(delete(SyncStaging).where(SyncStaging.job_id == job_id))
+                job.total_count = len(candidate.departments) + len(candidate.employees) + len(candidate.pending)
+            if job:
                 for kind, records in [('department', candidate.departments), ('employee', candidate.employees)]:
                     for identifier, value in records.items():
-                        db.add(SyncStaging(job_id=job_id, object_type=kind, source_id=identifier, normalized_data=value))
+                        db.merge(SyncStaging(job_id=job_id, object_type=kind, source_id=identifier, normalized_data=value))
             changes = 0
             # 未解析事实只保存在 pending_fact；已有事实仅降质量。
             for kind, identifier in candidate.pending:
                 model = Department if kind == 'department' else Employee
                 row = db.get(model, identifier)
+                self._record_detail(db, job_id, kind, identifier, getattr(row, 'name', None), 'failed', now, 'PENDING_VERIFICATION', '对象引用或字段未通过校验')
                 if row is not None and row.sync_quality != 'pending_verification':
                     self._log(db, kind, identifier, {'sync_quality': row.sync_quality}, {'sync_quality': 'pending_verification'}, job_id, now)
                     row.sync_quality = 'pending_verification'; changes += 1
@@ -94,7 +96,9 @@ class Publisher:
                 StoreAdminService._rebuild_projection(db)
                 state.data_version += 1
             if job:
-                job.status, job.phase, job.lease_expires_at, job.updated_at = 'succeeded', 'published', None, now
+                job.status, job.phase, job.lease_expires_at, job.updated_at, job.finished_at = 'succeeded', 'published', None, now, now
+                job.success_count = db.scalar(select(func.count()).select_from(SyncJobDetail).where(SyncJobDetail.job_id == job_id, SyncJobDetail.status == 'succeeded')) or 0
+                job.failure_count = db.scalar(select(func.count()).select_from(SyncJobDetail).where(SyncJobDetail.job_id == job_id, SyncJobDetail.status == 'failed')) or 0
                 db.execute(delete(SyncStaging).where(SyncStaging.job_id == job_id))
             if event_id:
                 event = db.get(EventInbox, event_id)
@@ -189,15 +193,37 @@ class Publisher:
         before = {key: getattr(row, key) for key in value} if row else None
         if before == value:
             row.last_seen_at = now
+            self._record_detail(db, job_id, kind, value['id'], value.get('name'), 'succeeded', now)
             return 0
         if row is None:
             row = model(**value); db.add(row)
         else:
             for key, item in value.items(): setattr(row, key, item)
         row.last_seen_at = now
-        self._log(db, kind, value['id'], before, value, job_id, now)
+        change = self._log(db, kind, value['id'], before, value, job_id, now)
+        db.flush()
+        self._record_detail(db, job_id, kind, value['id'], value.get('name'), 'succeeded', now, change_log_id=change.id)
         return 1
 
     @staticmethod
+    def _record_detail(db, job_id, kind, identifier, name, status, now, error_code=None, error_message=None, change_log_id=None):
+        if not job_id:
+            return
+        detail = db.scalar(select(SyncJobDetail).where(SyncJobDetail.job_id == job_id, SyncJobDetail.object_type == kind, SyncJobDetail.object_id == identifier).with_for_update())
+        if detail is None:
+            detail = SyncJobDetail(job_id=job_id, object_type=kind, object_id=identifier, object_name=name, status=status, attempt=1)
+            db.add(detail)
+        else:
+            detail.attempt = (detail.attempt or 0) + 1
+            detail.status = status
+            detail.object_name = name or detail.object_name
+        detail.error_code, detail.error_message = error_code, error_message
+        detail.started_at = detail.started_at or now
+        detail.finished_at = now
+        detail.change_log_id = change_log_id
+
+    @staticmethod
     def _log(db, kind, identifier, before, after, job_id, now):
-        db.add(ChangeLog(object_type=kind, object_id=identifier, source='feishu', actor='sync', job_id=job_id, before_data=before, after_data=after, committed_at=now))
+        change = ChangeLog(object_type=kind, object_id=identifier, source='feishu', actor='sync', job_id=job_id, before_data=before, after_data=after, committed_at=now)
+        db.add(change)
+        return change

@@ -193,15 +193,16 @@ def store_employees(store_id: str, membership: str = Query("all", pattern="^(all
 class JobRequest(BaseModel):
     type: str
     root_department_id: str | None = None
+    note: str | None = None
 
 
 @app.post("/admin/api/sync/jobs", status_code=202)
 def submit_job(body: JobRequest, authorization=Depends(require_admin_write), runtime: Runtime | None = Depends(get_runtime)):
     from datetime import datetime, timezone
-    if body.type not in {"full", "subtree", "reconcile"} or (body.type == "subtree" and not body.root_department_id):
+    if body.type not in {"initialize", "full", "subtree", "reconcile"} or (body.type == "subtree" and not body.root_department_id):
         raise HTTPException(422, {"code": "INVALID_JOB_SCOPE", "message": "同步任务类型或范围无效"})
     identity, _ = authorization
-    job, reused = runtime.jobs.submit(body.type, body.root_department_id, f"admin:{identity.open_id}", datetime.now(timezone.utc))
+    job, reused = runtime.jobs.submit(body.type, body.root_department_id, f"admin:{identity.open_id}", datetime.now(timezone.utc), body.note)
     return {"data": {"job_id": job.id, "status": job.status, "reused": reused}, "meta": {}}
 
 

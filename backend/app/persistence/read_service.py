@@ -160,7 +160,8 @@ class SqlReadService(ReadService):
             visited.add(current.id)
             names.append(current.name)
             current = db.get(Department, current.parent_id) if current.parent_id else None
-        return {"id": row.id, "parent_id": row.parent_id, "name": row.name, "path": list(reversed(names)), "status": row.status, "sync_quality": row.sync_quality, "is_virtual_root": row.is_virtual_root, "is_store": bool(profile and profile.is_store), "store_code": profile.store_code if profile else None, "notes": profile.notes if profile else None}
+        leader = db.get(Employee, row.leader_user_id) if row.leader_user_id else None
+        return {"id": row.id, "parent_id": row.parent_id, "name": row.name, "path": list(reversed(names)), "status": row.status, "sync_quality": row.sync_quality, "is_virtual_root": row.is_virtual_root, "leader_user_id": row.leader_user_id, "leader_name": leader.name if leader else None, "is_store": bool(profile and profile.is_store), "store_code": profile.store_code if profile else None, "notes": profile.notes if profile else None}
 
     @staticmethod
     def _store(db: Session, profile: StoreProfile, department: Department) -> dict:
@@ -183,4 +184,5 @@ class SqlReadService(ReadService):
         for relation in db.scalars(select(EmployeeStore).where(EmployeeStore.employee_id==row.id)):
             department=db.get(Department,relation.store_id)
             store_details.append({'id':relation.store_id,'name':department.name,'is_primary':relation.is_primary,'path':relation.path,'path_names':[db.get(Department,identifier).name for identifier in relation.path]})
-        return {"id": row.id, "name": row.name, "employee_no": row.employee_no, "status": row.status, "sync_quality": row.sync_quality, "department_ids": memberships, "departments":department_details,"stores":store_details,"primary_department_id": row.primary_department_id, "store_ids": [item[0] for item in stores], "primary_store_id": primary_store, "primary_store_status": row.primary_store_status}
+        leader = db.get(Employee, row.leader_user_id) if row.leader_user_id else None
+        return {"id": row.id, "name": row.name, "employee_no": row.employee_no, "status": row.status, "sync_quality": row.sync_quality, "employee_type_id": row.employee_type_id, "employee_type_name": row.employee_type_name, "job_title": row.job_title, "leader_user_id": row.leader_user_id, "leader_name": leader.name if leader else None, "permission_role_id": row.permission_role_id, "permission_role_name": row.permission_role_name, "store_attribute_id": row.store_attribute_id, "store_attribute_name": row.store_attribute_name, "department_ids": memberships, "departments":department_details,"stores":store_details,"primary_department_id": row.primary_department_id, "store_ids": [item[0] for item in stores], "primary_store_id": primary_store, "primary_store_status": row.primary_store_status}

@@ -141,7 +141,7 @@ class SqlSyncJobRepository:
     def __init__(self, sessions: sessionmaker[Session]):
         self._sessions = sessions
 
-    def submit(self, job_type: str, root_department_id: str | None, requested_by: str, now: datetime) -> tuple[SyncJob, bool]:
+    def submit(self, job_type: str, root_department_id: str | None, requested_by: str, now: datetime, description: str | None = None) -> tuple[SyncJob, bool]:
         with self._sessions.begin() as db:
             lock_row = db.scalar(select(SystemSetting).where(SystemSetting.key == "task_queue_lock").with_for_update())
             if lock_row is None:
@@ -157,7 +157,9 @@ class SqlSyncJobRepository:
                 return existing, True
             job = SyncJob(
                 id=secrets.token_urlsafe(12), type=job_type, root_department_id=root_department_id,
-                requested_by=requested_by, status="queued", attempt=1, lease_generation=0,
+                name=f"{job_type}同步", trigger_source='manual' if requested_by.startswith('admin:') else requested_by,
+                description=description or ('指定部门子树同步' if root_department_id else '全量组织同步'), requested_by=requested_by,
+                status="queued", attempt=1, lease_generation=0, execution_count=0, retry_count=0,
                 created_at=now, updated_at=now,
             )
             db.add(job)
@@ -171,6 +173,8 @@ class SqlSyncJobRepository:
             if job is None:
                 return None
             job.status = "running"
+            job.execution_count = (job.execution_count or 0) + 1
+            job.started_at = now
             job.lease_generation += 1
             job.lease_expires_at = lease_expires_at
             job.updated_at = now
@@ -189,6 +193,7 @@ class SqlSyncJobRepository:
                 raise ValueError("job lease is stale")
             job.status, job.error_code, job.error_detail = status, error_code, error_detail
             job.lease_expires_at, job.updated_at = None, now
+            job.finished_at = now
             return job
 
     def retry(self, job_id: str, requested_by: str, now: datetime) -> SyncJob:
@@ -197,6 +202,11 @@ class SqlSyncJobRepository:
             if job is None or job.status != "failed":
                 raise ValueError("only failed jobs can be retried")
             job.status, job.requested_by, job.attempt = "queued", requested_by, job.attempt + 1
+            job.retry_count = (job.retry_count or 0) + 1
+            job.finished_at = None
+            job.started_at = None
+            job.phase = 'queued'
+            db.add(ChangeLog(object_type='sync_job', object_id=job.id, source='admin', actor=requested_by, job_id=job.id, before_data={'status': 'failed', 'attempt': job.attempt - 1}, after_data={'status': 'queued', 'attempt': job.attempt, 'retry_count': job.retry_count}, committed_at=now))
             job.error_code = job.error_detail = None
             job.updated_at = now
             return job
