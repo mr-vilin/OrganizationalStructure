@@ -59,7 +59,9 @@ class SqlIdentityRepository:
             if marker is not None:
                 return False
             for open_id in open_ids:
-                db.add(AdminAllowlist(open_id=open_id, created_at=now))
+                # 恢复/人工清理后标记可能丢失，但白名单记录仍在；避免重复主键导致登录失败。
+                if db.get(AdminAllowlist, open_id) is None:
+                    db.add(AdminAllowlist(open_id=open_id, created_at=now))
             db.add(SystemSetting(key="admin_allowlist_initialized", value="true"))
             return True
 

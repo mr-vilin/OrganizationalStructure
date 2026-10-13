@@ -1,4 +1,5 @@
 from datetime import datetime
+import logging
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -16,6 +17,7 @@ from .admin.router import router as admin_router
 
 app = FastAPI(title="组织架构维护系统", version="1.0.0")
 app.include_router(admin_router)
+log = logging.getLogger("organization.api")
 
 
 def error(code: str, message: str, status: int, *, fields: list | None = None) -> JSONResponse:
@@ -34,6 +36,7 @@ async def http_error_handler(request: Request, exc: HTTPException):
 @app.exception_handler(SQLAlchemyError)
 async def database_error_handler(request: Request, exc: SQLAlchemyError):
     # 不序列化或记录异常原文，原文可能包含 SQL、参数和数据库地址。
+    log.error("数据库操作失败 path=%s error_type=%s", request.url.path, type(exc).__name__)
     unavailable=isinstance(exc,(OperationalError,InterfaceError,DisconnectionError,SQLTimeoutError))
     return error('DATABASE_UNAVAILABLE' if unavailable else 'DATABASE_ERROR','数据库暂时不可用' if unavailable else '数据库操作失败',503 if unavailable else 500)
 

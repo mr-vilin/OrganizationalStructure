@@ -29,6 +29,11 @@ class Worker:
     def acquire(self, now):
         with self.sessions.begin() as db:
             lease = db.scalar(select(WorkerLease).where(WorkerLease.id == 1).with_for_update())
+            if lease is None:
+                # 迁移首次建表会种入单例；若运维清理误删，启动时安全补回而不丢失业务数据。
+                db.add(WorkerLease(id=1, generation=0))
+                db.flush()
+                lease = db.scalar(select(WorkerLease).where(WorkerLease.id == 1).with_for_update())
             if lease is None: raise RuntimeError('DATABASE_SCHEMA_INCOMPLETE')
             if lease.owner and lease.expires_at and lease.expires_at > now and lease.owner != self.owner:
                 return False
@@ -62,6 +67,12 @@ class Worker:
         ScheduleService(self.sessions).due(now)
         job = self.jobs.claim_next(now, now+timedelta(seconds=120))
         if job:
+            if job.type == 'reconcile' and not self._initialization_complete():
+                with self.sessions.begin() as db:
+                    row = db.get(SyncJob, job.id)
+                    if row and row.status == 'running':
+                        row.status, row.phase, row.lease_expires_at, row.updated_at = 'queued', 'waiting_initialization', None, now
+                return True
             self.current_job = (job.id, job.lease_generation)
             try:
                 self._refresh_coverage()
@@ -98,6 +109,11 @@ class Worker:
                 self._fail_event(event.event_id)
             return True
         return False
+
+    def _initialization_complete(self):
+        with self.sessions() as db:
+            state = db.get(DatasetState, 1)
+            return state is not None and state.initialization_status == 'complete'
 
     def _stage_candidate(self, job_id, candidate):
         """在发布事务前保存规范化候选，供进程中断后的诊断和恢复使用。"""
