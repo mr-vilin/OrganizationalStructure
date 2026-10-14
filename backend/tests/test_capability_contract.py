@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime
 from app.capabilities.contracts import AgentContext, Observation, CapabilityResult
 from app.capabilities.errors import OperationConflict
 
@@ -24,3 +25,22 @@ def test_error_serialization_is_stable():
     error = OperationConflict()
     assert error.status == 409
     assert error.to_dict() == {"error": {"code": "OPERATION_CONFLICT", "message": "Operation conflicts with current state"}}
+
+def test_nested_inputs_are_frozen_and_json_serialized():
+    evidence = {"ids": ["a"], "when": datetime(2026, 1, 2)}
+    data = {"items": [{"x": 1}]}
+    audit = {"tags": {"safe"}}
+    result = CapabilityResult("op", data, observation(evidence=evidence), audit)
+    evidence["ids"].append("b"); data["items"][0]["x"] = 9; audit["tags"].add("changed")
+    assert result.to_dict()["data"] == {"items": [{"x": 1}]}
+    assert result.to_dict()["observation"]["evidence"]["ids"] == ["a"]
+    assert result.to_dict()["audit"]["tags"] == ["safe"]
+    assert result.to_dict()["observation"]["evidence"]["when"] == "2026-01-02T00:00:00"
+
+def test_non_json_custom_value_fails_deterministically():
+    with pytest.raises(TypeError, match="not JSON encodable"):
+        CapabilityResult("op", object(), observation(), {}).to_dict()
+
+@pytest.mark.parametrize("error_type", [OperationConflict])
+def test_error_ignores_sensitive_caller_message(error_type):
+    assert "secret" not in error_type("secret-token").to_dict()["error"]["message"]

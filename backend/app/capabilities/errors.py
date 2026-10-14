@@ -5,7 +5,7 @@ class CapabilityError(Exception):
     message = "Capability request failed"
 
     def __init__(self, message: str | None = None):
-        self.detail = message or self.message
+        self.detail = self.message
         super().__init__(self.detail)
 
     def to_dict(self):
