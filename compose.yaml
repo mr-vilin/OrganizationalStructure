@@ -26,7 +26,9 @@ services:
       mysql:
         condition: service_healthy
   app:
+    image: organization-directory-runtime:${ORG_IMAGE_TAG:-local}
     build: .
+    networks: [default, capabilities]
     env_file: .env
     restart: unless-stopped
     ports:
@@ -40,5 +42,38 @@ services:
       timeout: 5s
       retries: 3
     stop_grace_period: 20s
+  mcp:
+    profiles: [agent]
+    image: organization-directory-runtime:${ORG_IMAGE_TAG:-local}
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "app.mcp", "--transport", "streamable-http"]
+    networks: [capabilities]
+    environment:
+      ORG_MCP_HOST: ${ORG_MCP_HOST:-0.0.0.0}
+      ORG_MCP_PORT: ${ORG_MCP_PORT:-8001}
+      ORG_MCP_SERVICE_TOKEN: ${ORG_MCP_SERVICE_TOKEN:-}
+      ORG_AGENT_SERVICE_TOKEN: ${ORG_AGENT_SERVICE_TOKEN:-}
+      ORG_AGENT_ENVIRONMENT: ${ORG_AGENT_ENVIRONMENT:-production}
+      ORG_MCP_CAPABILITY_BASE_URL: ${ORG_MCP_CAPABILITY_BASE_URL:-http://app:8000}
+      ORG_MCP_ACTOR_TYPE: ${ORG_MCP_ACTOR_TYPE:-}
+      ORG_MCP_ACTOR_ID: ${ORG_MCP_ACTOR_ID:-}
+      ORG_MCP_RUN_ID: ${ORG_MCP_RUN_ID:-}
+      ORG_MCP_CASE_ID: ${ORG_MCP_CASE_ID:-}
+      ORG_MCP_CONFIRMATION_TIMEOUT: ${ORG_MCP_CONFIRMATION_TIMEOUT:-60}
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.mcp.health"]
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 20s
+networks:
+  default:
+  capabilities:
+    internal: true
 volumes:
   mysql-data:

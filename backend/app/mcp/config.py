@@ -10,7 +10,9 @@ from .models import AgentPrincipal
 
 
 class MCPSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="ORG_", extra="ignore", hide_input_in_errors=True)
+    model_config = SettingsConfigDict(env_prefix="ORG_", extra="ignore", hide_input_in_errors=True, env_ignore_empty=True)
+    mcp_host: str = Field(default="127.0.0.1", min_length=1, pattern=r"^[A-Za-z0-9_.:-]+$")
+    mcp_port: int = Field(default=8001, ge=1, le=65535)
     mcp_service_token: SecretStr
     agent_service_token: SecretStr
     mcp_capability_base_url: str
@@ -53,6 +55,23 @@ def create_server(settings: MCPSettings | None = None):
         raise ValueError("MCP_RUNTIME_NOT_CONFIGURED") from None
 
 
+def http_app(server, *, host: str, port: int):
+    """部署仅接受当前端口的回环、Compose 服务名及显式监听名。"""
+    from mcp.server.transport_security import TransportSecuritySettings
+    hosts = {"127.0.0.1", "localhost", "[::1]", "mcp"}
+    if host not in {"0.0.0.0", "::"}:
+        hosts.add(f"[{host}]" if ":" in host else host)
+    authorities = sorted({f"{name}:{port}" for name in hosts} | (hosts if port == 80 else set()))
+    security = TransportSecuritySettings(enable_dns_rebinding_protection=True,
+                                         allowed_hosts=authorities,
+                                         allowed_origins=[f"http://{name}" for name in authorities])
+    return server.streamable_http_app(host=host, transport_security=security)
+
+
 def create_app():
-    """uvicorn app.mcp.config:create_app --factory；认证覆盖 /mcp 所有请求。"""
-    return create_server().streamable_http_app()
+    """uvicorn ASGI factory；uvicorn 自身的监听参数仍需调用者显式传入。"""
+    try:
+        config = MCPSettings()
+    except ValueError:
+        raise ValueError("MCP_RUNTIME_NOT_CONFIGURED") from None
+    return http_app(create_server(config), host=config.mcp_host, port=config.mcp_port)
