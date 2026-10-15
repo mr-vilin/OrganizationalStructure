@@ -228,6 +228,49 @@ def test_duplicate_trusted_headers_are_rejected(boundary, header):
     runtime.assert_not_called()
 
 
+@pytest.mark.parametrize('marker', ['unknown', '', 'BASE64URL-UTF8'])
+def test_unknown_identity_encoding_is_rejected_before_runtime(boundary, marker):
+    client, runtime = boundary
+    response = client.get('/internal/capabilities/status', headers={**HEADERS, 'X-Agent-Identity-Encoding': marker})
+    assert response.status_code == 401
+    assert response.json() == {'error': {'code': 'AGENT_SERVICE_UNAUTHORIZED', 'message': '内部能力服务身份无效'}}
+    runtime.assert_not_called()
+
+
+def test_duplicate_identity_encoding_is_rejected_before_runtime(boundary):
+    client, runtime = boundary
+    headers = list(HEADERS.items()) + [('X-Agent-Identity-Encoding', 'base64url-utf8')] * 2
+    assert client.get('/internal/capabilities/status', headers=headers).status_code == 401
+    runtime.assert_not_called()
+
+
+@pytest.mark.parametrize('header', ['X-Agent-Actor-Id', 'X-Agent-Run-Id', 'X-Agent-Case-Id'])
+@pytest.mark.parametrize('value', ['', 'YQ==', 'YR', 'YQ+', 'YQ/', 'Y Q', '_w', 'AA', 'YSA', '4oCL', 'YQ' * 768,
+                                   'YWFh' * 64])
+def test_invalid_or_noncanonical_encoded_identity_is_safe_401(boundary, header, value):
+    client, runtime = boundary
+    headers = {**HEADERS, 'X-Agent-Identity-Encoding': 'base64url-utf8', 'X-Agent-Actor-Id': 'YWdlbnQtYQ', header: value}
+    response = client.get('/internal/capabilities/status', headers=headers)
+    assert response.status_code == 401
+    assert response.json() == {'error': {'code': 'AGENT_SERVICE_UNAUTHORIZED', 'message': '内部能力服务身份无效'}}
+    runtime.assert_not_called()
+
+
+def test_encoding_marker_does_not_allow_mixed_plain_and_encoded_ids(boundary):
+    client, runtime = boundary
+    headers = {**HEADERS, 'X-Agent-Identity-Encoding': 'base64url-utf8', 'X-Agent-Actor-Id': 'YWdlbnQtYQ', 'X-Agent-Run-Id': 'plain!'}
+    assert client.get('/internal/capabilities/status', headers=headers).status_code == 401
+    runtime.assert_not_called()
+
+
+def test_invalid_token_is_rejected_before_encoded_identity_decoding(boundary, monkeypatch):
+    client, runtime = boundary
+    monkeypatch.setattr('app.dependencies.base64.urlsafe_b64decode', lambda value: pytest.fail('must authenticate before decoding'))
+    headers = {**HEADERS, 'Authorization': 'Bearer synthetic-wrong', 'X-Agent-Identity-Encoding': 'base64url-utf8', 'X-Agent-Actor-Id': 'YWdlbnQtYQ'}
+    assert client.get('/internal/capabilities/status', headers=headers).status_code == 401
+    runtime.assert_not_called()
+
+
 def test_authenticated_missing_runtime_is_explicit(boundary):
     client, runtime = boundary
     runtime.return_value = None

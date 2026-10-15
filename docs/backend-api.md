@@ -138,9 +138,12 @@ worker 通过 `SqlSyncJobRepository.claim_next()` 认领任务；全局租约、
 | `X-Agent-Actor-Id` | 非空稳定主体 ID，最长 191 字符，不允许空白或控制字符 |
 | `X-Agent-Environment` | 必须等于服务端配置的 `production` 或 `test` |
 | `X-Agent-Run-Id` / `X-Agent-Case-Id` | 可选，提供时遵循主体 ID 字符规则 |
+| `X-Agent-Identity-Encoding` | 可选，唯一支持 `base64url-utf8`；见下方身份编码约定 |
 | `X-Agent-Approved` | 可选，只接受小写 `true` / `false`，默认 `false` |
 
 以上头不得重复。缺/错/空 token、非法主体头或环境不匹配统一返回 `401 AGENT_SERVICE_UNAUTHORIZED`，身份校验通过前不构造业务 Runtime、不读取业务数据。可信身份有效但 Runtime 未配置时返回 `503 DATABASE_NOT_CONFIGURED`。body 中的 `actor`、`actor_id`、`environment`、`approved`、`token`、`approval_token` 等额外身份字段被忽略，不参与授权。
+
+可信 sidecar 发送 `X-Agent-Identity-Encoding: base64url-utf8` 时，`X-Agent-Actor-Id`、以及存在的 `X-Agent-Run-Id` / `X-Agent-Case-Id` 必须统一先编码为 UTF-8 bytes，再使用规范的无 `=` padding 的 base64url ASCII 编码，以无损传输中文身份；actor type、environment、approved 保持原字面值。服务先验证独立服务令牌，再严格解码并校验原始 ID。重复或未知 encoding、混用原文、畸形/非规范 base64url、非法 UTF-8、解码后非法 ID 均返回固定安全 401。无 marker 的旧 ASCII 调用保持兼容，不猜测 Latin-1/UTF-8 修复。编码与身份头只能由可信服务构造，不接受模型选择。
 
 生产 L2 写入（门店 apply、同步请求与重试）必须有可信 `X-Agent-Approved: true`，否则返回 `409 CONFIRMATION_REQUIRED`。L0/L1 查询和 preview 不要求确认。`ci_agent` 禁止访问 production；test 环境还要求以 `test-` 或 `test_` 开头的非空 run_id，并由能力门面核验实际测试数据库。
 

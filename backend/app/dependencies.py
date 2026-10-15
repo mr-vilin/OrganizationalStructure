@@ -1,5 +1,8 @@
+import base64
+import binascii
 import hashlib
 import hmac
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -82,7 +85,7 @@ def get_agent_context(request: Request, settings=Depends(get_settings)) -> Agent
         raise HTTPException(401, {"code": "AGENT_SERVICE_UNAUTHORIZED", "message": "内部能力服务身份无效"})
 
     names = ("authorization", "x-agent-actor-type", "x-agent-actor-id", "x-agent-environment",
-             "x-agent-run-id", "x-agent-case-id", "x-agent-approved")
+             "x-agent-run-id", "x-agent-case-id", "x-agent-approved", "x-agent-identity-encoding")
     if any(len(request.headers.getlist(name)) > 1 for name in names):
         unauthorized()
     secret = settings.agent_service_token.get_secret_value() if settings.agent_service_token else ""
@@ -98,6 +101,24 @@ def get_agent_context(request: Request, settings=Depends(get_settings)) -> Agent
     approved = request.headers.get("x-agent-approved", "false")
     run_id = request.headers.get("x-agent-run-id")
     case_id = request.headers.get("x-agent-case-id")
+    encoding = request.headers.get("x-agent-identity-encoding")
+    if encoding is not None:
+        if encoding != "base64url-utf8":
+            unauthorized()
+        def decode_identifier(value):
+            if value is None:
+                return None
+            # 191 个 Unicode 字符最多 764 个 UTF-8 bytes，编码最多 1019 字符。
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,1019}", value):
+                unauthorized()
+            try:
+                raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+                if base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") != value:
+                    unauthorized()
+                return raw.decode("utf-8")
+            except (ValueError, binascii.Error, UnicodeError):
+                unauthorized()
+        actor_id, run_id, case_id = (decode_identifier(value) for value in (actor_id, run_id, case_id))
     def valid_identifier(value):
         return bool(value) and len(value) <= 191 and all(char.isprintable() and not char.isspace() for char in value)
     if (actor_type not in {"human_agent", "ci_agent"} or not valid_identifier(actor_id)
