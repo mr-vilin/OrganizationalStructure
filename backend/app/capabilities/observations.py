@@ -12,13 +12,20 @@ _STATUS_EXECUTION = {"queued": "accepted", "accepted": "accepted", "running": "r
 
 
 class ObservationService:
-    def _state(self, db: Session) -> DatasetState:
-        return db.scalar(select(DatasetState).where(DatasetState.id == 1))
+    def _state(self, db: Session):
+        return db.execute(select(DatasetState.dataset_epoch, DatasetState.data_version, DatasetState.initialization_status, DatasetState.coverage_status).where(DatasetState.id == 1)).one_or_none()
 
     def _base(self, db: Session, execution: str, evidence: dict[str, Any] | None = None, *, fact_quality: str | None = None) -> Observation:
         state = self._state(db)
         pending = db.scalar(select(func.count()).select_from(PendingFact)) or 0
-        quality = fact_quality or ("partial" if pending else "resolved")
+        if state is None:
+            quality = "unknown"
+        elif pending or fact_quality == "partial" or state.coverage_status == "incomplete":
+            quality = "partial"
+        elif state.initialization_status != "complete" or state.coverage_status != "complete":
+            quality = "unknown"
+        else:
+            quality = "resolved"
         if state is None:
             return Observation("unconfirmed", "unknown", None, None, "retry_observation", evidence or {})
         if pending and execution in {"submitted", "verified"}:
@@ -43,7 +50,7 @@ class ObservationService:
 
     def observation_for_job(self, db: Session, job_id: str) -> Observation:
         try:
-            job = db.get(SyncJob, job_id)
+            job = db.get(SyncJob, job_id, populate_existing=True)
             if job is None:
                 return Observation("unconfirmed", "unknown", None, None, "inspect_job", {"job_id": job_id, "status": "missing"})
             return self.observation_for_status(db, job.status, job_id)
@@ -53,7 +60,9 @@ class ObservationService:
     def observation_for_commit(self, db: Session, epoch: str | None = None, version: int | None = None, job_id: str | None = None) -> Observation:
         try:
             obs = self.observation_for_job(db, job_id) if job_id else self._base(db, "submitted", {"status": "committed"})
-            if epoch is not None and obs.dataset_epoch != epoch or version is not None and obs.data_version != version:
+            if obs.execution == "unconfirmed":
+                return obs
+            if (epoch is not None and obs.dataset_epoch != epoch) or (version is not None and obs.data_version != version):
                 return Observation("unconfirmed", "inconsistent", obs.dataset_epoch, obs.data_version, "refresh_dataset", {**obs.evidence, "expected_epoch": epoch, "expected_version": version})
             return obs
         except Exception:

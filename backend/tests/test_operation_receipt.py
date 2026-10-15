@@ -95,3 +95,111 @@ def test_receipt_failed_update_and_secret_redaction(receipt_sessions):
         row = repo.get_by_idempotency(db, 'actor', 'test', 'failed')
         assert row.status == 'failed' and row.error_code == 'REMOTE_ERROR'
         assert row.result_summary['token'] == '[REDACTED]'
+
+@pytest.mark.parametrize('late', ['accepted', 'submitted', 'failed'])
+def test_completed_receipt_rejects_conflicting_result(receipt_sessions, late):
+    repo = ReceiptRepository(); now = datetime(2026, 1, 1)
+    with receipt_sessions.begin() as db:
+        row = repo.create(db, receipt_ctx(), 'apply', 'terminal', 'hash', now)
+        repo.mark_accepted(db, row.operation_id, 'job', 'e', 1, {}, now)
+        repo.mark_submitted(db, row.operation_id, 'e', 2, {'changed_count': 2}, [1, 2], now)
+        assert repo.mark_submitted(db, row.operation_id, 'e', 2, {'changed_count': 2}, [1, 2], now) is row
+        with pytest.raises(OperationConflict):
+            if late == 'accepted': repo.mark_accepted(db, row.operation_id, 'another', 'e', 0, {}, now)
+            elif late == 'submitted': repo.mark_submitted(db, row.operation_id, 'e', 3, {}, [3], now)
+            else: repo.mark_failed(db, row.operation_id, 'LATE_FAILURE', {}, now)
+        assert (row.status, row.job_id, row.committed_version, row.result_summary['audit_ids']) == ('submitted', 'job', 2, [1, 2])
+
+
+def test_failed_is_terminal_and_accepted_cannot_rebind(receipt_sessions):
+    repo = ReceiptRepository(); now = datetime(2026, 1, 1)
+    with receipt_sessions.begin() as db:
+        row = repo.create(db, receipt_ctx(), 'sync', 'transitions', 'hash', now)
+        repo.mark_accepted(db, row.operation_id, 'job', 'e', 1, {}, now)
+        assert repo.mark_accepted(db, row.operation_id, 'job', 'e', 1, {}, now) is row
+        with pytest.raises(OperationConflict): repo.mark_accepted(db, row.operation_id, 'other', 'e', 1, {}, now)
+        repo.mark_failed(db, row.operation_id, 'REMOTE_ERROR', {}, now)
+        assert repo.mark_failed(db, row.operation_id, 'REMOTE_ERROR', {}, now) is row
+        with pytest.raises(OperationConflict): repo.mark_failed(db, row.operation_id, 'OTHER_ERROR', {}, now)
+        with pytest.raises(OperationConflict): repo.mark_submitted(db, row.operation_id, 'e', 2, {}, [], now)
+        with pytest.raises(OperationConflict): repo.mark_accepted(db, row.operation_id, 'job', 'e', 1, {}, now)
+        assert row.job_id == 'job' and row.error_code == 'REMOTE_ERROR'
+
+
+def test_complete_audit_ids_and_untrusted_text(receipt_sessions):
+    repo = ReceiptRepository(); now = datetime(2026, 1, 1)
+    with receipt_sessions.begin() as db:
+        row = repo.create(db, receipt_ctx(), 'apply', 'audit', 'hash', now)
+        repo.mark_submitted(db, row.operation_id, 'e', 2, {
+            'changed_count': 101, 'message': 'Bearer SYNTHETIC_SECRET',
+            'detail': ['Authorization: SYNTHETIC_SECRET', {'url': 'https://x/?code=SYNTHETIC_SECRET'}],
+            'custom': 'OAuth SYNTHETIC_SECRET', 'token': 'SYNTHETIC_SECRET',
+        }, list(range(101)), now)
+    with receipt_sessions() as db:
+        import json
+        row = repo.get_by_idempotency(db, 'actor', 'test', 'audit')
+        assert row.result_summary['audit_ids'] == list(range(101))
+        assert row.result_summary['changed_count'] == 101
+        assert 'SYNTHETIC_SECRET' not in json.dumps(row.result_summary)
+
+
+def test_create_locks_dataset_before_current_idempotency_read(receipt_sessions):
+    from sqlalchemy import event
+    statements = []
+    repo = ReceiptRepository(); now = datetime(2026, 1, 1)
+    with receipt_sessions.begin() as db:
+        @event.listens_for(db, 'do_orm_execute')
+        def record(execute_state):
+            statements.append(execute_state.statement)
+        first = repo.create(db, receipt_ctx(), 'sync', 'lock-order', 'hash', now)
+        assert repo.create(db, receipt_ctx(), 'sync', 'lock-order', 'hash', now) is first
+    assert [str(stmt.get_final_froms()[0]) for stmt in statements[:2]] == ['dataset_state', 'operation_receipt']
+    assert all(stmt._for_update_arg is not None for stmt in statements)
+    assert all(stmt.get_execution_options().get('populate_existing') for stmt in statements)
+
+def test_submitted_cannot_regress_same_epoch_version(receipt_sessions):
+    repo = ReceiptRepository(); now = datetime(2026, 1, 1)
+    with receipt_sessions.begin() as db:
+        row = repo.create(db, receipt_ctx(), 'sync', 'version', 'hash', now)
+        repo.mark_accepted(db, row.operation_id, 'job', 'e', 4, {}, now)
+        with pytest.raises(OperationConflict): repo.mark_submitted(db, row.operation_id, 'e', 3, {}, [], now)
+        assert row.status == 'accepted' and row.committed_version == 4
+
+
+def test_stale_session_cannot_overwrite_terminal_receipt(receipt_sessions):
+    repo = ReceiptRepository(); now = datetime(2026, 1, 1)
+    with receipt_sessions.begin() as db:
+        operation_id = repo.create(db, receipt_ctx(), 'sync', 'stale', 'hash', now).operation_id
+    with receipt_sessions() as stale:
+        cached = repo.get_by_idempotency(stale, 'actor', 'test', 'stale')
+        stale.commit()
+        with receipt_sessions.begin() as other:
+            repo.mark_submitted(other, operation_id, 'e', 2, {}, [1], now)
+        assert cached.status == 'recorded'
+        with pytest.raises(OperationConflict): repo.mark_failed(stale, operation_id, 'LATE_ERROR', {}, now)
+        assert cached.status == 'submitted'
+
+
+@pytest.mark.parametrize('action', ['accepted', 'submitted', 'failed'])
+def test_receipt_update_participates_in_caller_rollback(receipt_sessions, action):
+    repo = ReceiptRepository(); now = datetime(2026, 1, 1)
+    with receipt_sessions.begin() as db:
+        operation_id = repo.create(db, receipt_ctx(), 'sync', 'update-rollback', 'hash', now).operation_id
+    with pytest.raises(RuntimeError):
+        with receipt_sessions.begin() as db:
+            if action == 'accepted': repo.mark_accepted(db, operation_id, 'job', 'e', 1, {}, now)
+            elif action == 'submitted': repo.mark_submitted(db, operation_id, 'e', 2, {}, [1], now)
+            else: repo.mark_failed(db, operation_id, 'ERROR', {}, now)
+            raise RuntimeError('caller rollback')
+    with receipt_sessions() as db:
+        row = repo.get_by_idempotency(db, 'actor', 'test', 'update-rollback')
+        assert row.status == 'recorded' and row.result_summary is None
+
+
+@pytest.mark.parametrize('bad_id', [True, -1, {}, 'Bearer SYNTHETIC_SECRET'])
+def test_invalid_audit_id_rejected_without_overwriting_result(receipt_sessions, bad_id):
+    repo = ReceiptRepository(); now = datetime(2026, 1, 1)
+    with receipt_sessions.begin() as db:
+        row = repo.create(db, receipt_ctx(), 'apply', 'bad-audit', 'hash', now)
+        with pytest.raises(OperationConflict): repo.mark_submitted(db, row.operation_id, 'e', 2, {}, [bad_id], now)
+        assert row.status == 'recorded'
