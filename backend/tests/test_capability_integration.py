@@ -518,3 +518,27 @@ def test_store_caller_session_preserves_current_notes_and_complete_batch_audits(
             assert db.get(ChangeLog, 2).before_data['notes'] == '当前备注'
             assert db.get(ChangeLog, 2).after_data['notes'] == '当前备注'
     finally: engine.dispose()
+
+
+
+def test_store_write_dependency_reads_emit_mysql_current_read_sql():
+    """校验 SQL 读类型；SQLite 执行本身不证明 InnoDB Read View 行为。"""
+    from sqlalchemy.dialects import mysql
+    sessions, engine = make_sessions()
+    seed_store(sessions)
+    dependencies = {'dataset_state', 'department', 'store_profile', 'store_code_reservation', 'employee_department', 'employee'}
+    observed = []
+    try:
+        with sessions.begin() as db:
+            def record(execution):
+                if execution.is_select:
+                    statement = execution.statement
+                    tables = {table.name for table in statement.get_final_froms()}
+                    if tables & dependencies:
+                        observed.append((tables, str(statement.compile(dialect=mysql.dialect()))))
+            event.listen(db, 'do_orm_execute', record)
+            StoreAdminService(sessions).apply_in_session(db, [StorePatch('a', True, 'fresh')], 7, 'agent', datetime.now())
+        assert set().union(*(tables for tables, _ in observed)) == dependencies
+        unsafe = [sorted(tables) for tables, sql in observed if 'FOR UPDATE' not in sql]
+        assert unsafe == [], f'写依赖仍有普通一致性读取: {unsafe}'
+    finally: engine.dispose()
