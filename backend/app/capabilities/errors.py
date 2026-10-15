@@ -41,3 +41,6 @@ class AmbiguousTarget(CapabilityError):
 
 class CapabilityUnavailable(CapabilityError):
     code, status, message = "CAPABILITY_UNAVAILABLE", 503, "Capability is temporarily unavailable"
+
+class InvalidCapabilityCursor(CapabilityError):
+    code, status, message = "INVALID_CURSOR", 400, "Cursor is invalid or does not match filters"

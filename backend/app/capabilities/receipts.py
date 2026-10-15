@@ -163,14 +163,14 @@ class ReceiptRepository:
                    'success_count': job.success_count, 'failure_count': job.failure_count}
         if changed_count is not None:
             summary['changed_count'] = changed_count
-        audit_ids = list(db.scalars(select(ChangeLog.id).where(ChangeLog.job_id == job.id).order_by(ChangeLog.id)))
+        audit_ids = list(db.scalars(select(ChangeLog.id).where(ChangeLog.job_id == job.id).order_by(ChangeLog.id).with_for_update()))
         for row in rows:
             same_epoch = row.before_epoch == row.committed_epoch == state.dataset_epoch
             first_epoch = (allow_initial_epoch_transition and state.dataset_epoch != 'pending'
                            and row.before_epoch == row.committed_epoch == 'pending')
             if not (same_epoch or first_epoch):
                 self._update(db, row, 'failed', {
-                    'error_code': 'DATASET_CHANGED', 'result_summary': _sanitize({'job_id': job.id}),
+                    'error_code': 'DATASET_CHANGED', 'result_summary': {**_sanitize({'job_id': job.id}), 'audit_ids': _audit_ids(audit_ids)},
                 }, now)
                 continue
             if job.status == 'failed':
@@ -178,7 +178,7 @@ class ReceiptRepository:
                 if not isinstance(code, str) or not _ERROR_CODE.fullmatch(code):
                     code = 'SYNC_FAILED'
                 self._update(db, row, 'failed', {
-                    'error_code': code, 'result_summary': _sanitize(summary),
+                    'error_code': code, 'result_summary': {**_sanitize(summary), 'audit_ids': _audit_ids(audit_ids)},
                 }, now)
                 continue
             self._update(db, row, 'submitted', {

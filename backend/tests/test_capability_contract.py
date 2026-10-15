@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime
 from app.capabilities.contracts import AgentContext, Observation, CapabilityResult
-from app.capabilities.errors import (OperationConflict, ConfirmationRequired, OperationNotFound, CapabilityNotAllowed, InvalidCapabilityRequest, DatasetChangedError, CapabilityUnavailable)
+from app.capabilities.errors import (OperationConflict, ConfirmationRequired, OperationNotFound, CapabilityNotAllowed, InvalidCapabilityRequest, DatasetChangedError, CapabilityUnavailable, InvalidCapabilityCursor)
 
 def observation(**kwargs):
     values = dict(execution="verified", fact_quality="resolved", dataset_epoch="e", data_version=1, next_action=None, evidence={})
@@ -41,7 +41,7 @@ def test_non_json_custom_value_fails_deterministically():
     with pytest.raises(TypeError, match="not JSON encodable"):
         CapabilityResult("op", object(), observation(), {}).to_dict()
 
-@pytest.mark.parametrize("error_type", [OperationConflict, ConfirmationRequired, OperationNotFound, CapabilityNotAllowed, InvalidCapabilityRequest, DatasetChangedError, CapabilityUnavailable])
+@pytest.mark.parametrize("error_type", [OperationConflict, ConfirmationRequired, OperationNotFound, CapabilityNotAllowed, InvalidCapabilityRequest, DatasetChangedError, CapabilityUnavailable, InvalidCapabilityCursor])
 def test_error_ignores_sensitive_caller_message(error_type):
     assert "secret" not in error_type("secret-token").to_dict()["error"]["message"]
 

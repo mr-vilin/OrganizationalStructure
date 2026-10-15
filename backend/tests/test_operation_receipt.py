@@ -203,3 +203,30 @@ def test_invalid_audit_id_rejected_without_overwriting_result(receipt_sessions, 
         row = repo.create(db, receipt_ctx(), 'apply', 'bad-audit', 'hash', now)
         with pytest.raises(OperationConflict): repo.mark_submitted(db, row.operation_id, 'e', 2, {}, [bad_id], now)
         assert row.status == 'recorded'
+
+
+@pytest.mark.parametrize("epoch_changed", [False, True])
+def test_review_i3_failure_freezes_all_audit_ids_in_original_transaction(receipt_sessions, epoch_changed):
+    from app.persistence.models import ChangeLog, SyncJob
+    repo = ReceiptRepository()
+    now = datetime(2026, 1, 1)
+    with receipt_sessions.begin() as db:
+        row = repo.create(db, receipt_ctx(), "request_sync", "failure-audit", "hash", now)
+        operation_id = row.operation_id
+        repo.mark_accepted(db, row.operation_id, "job", "e", 1, {}, now)
+        job = SyncJob(id="job", type="full", requested_by="actor", status="failed", error_code="SYNC_FAILED", created_at=now, updated_at=now)
+        db.add(job)
+        for identifier in range(1, 126):
+            db.add(ChangeLog(id=identifier, object_type="sync_job", object_id="job", job_id="job", source="sync", actor="actor", after_data={"status":"failed"}, committed_at=now))
+        if epoch_changed: db.get(DatasetState, 1).dataset_epoch = "restored"
+        repo.finalize_job_in_session(db, job, now)
+    with receipt_sessions() as db:
+        row = db.get(OperationReceipt, operation_id)
+        assert row.result_summary["audit_ids"] == list(range(1, 126))
+        assert row.status == "failed" and row.committed_epoch == "e" and row.committed_version == 1
+        assert row.error_code == ("DATASET_CHANGED" if epoch_changed else "SYNC_FAILED")
+    with receipt_sessions.begin() as db:
+        db.add(ChangeLog(id=126, object_type="sync_job", object_id="job", job_id="job", source="admin", actor="actor", after_data={"status":"queued"}, committed_at=now))
+        repo.finalize_job_in_session(db, db.get(SyncJob, "job"), now)
+    with receipt_sessions() as db:
+        assert db.get(OperationReceipt, operation_id).result_summary["audit_ids"] == list(range(1, 126))

@@ -13,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .contracts import AgentContext, CapabilityResult, Observation
 from .errors import (AmbiguousTarget, CapabilityError, CapabilityNotAllowed, CapabilityUnavailable,
-                     ConfirmationRequired, DatasetChangedError, InvalidCapabilityRequest,
+                     ConfirmationRequired, DatasetChangedError, InvalidCapabilityRequest, InvalidCapabilityCursor,
                      OperationConflict, OperationNotFound)
 from .receipts import _sanitize
 from app.persistence.models import (ChangeLog, DatasetState, Department, OperationReceipt,
@@ -34,6 +34,8 @@ def boundary(method):
         except RuntimeError as exc:
             if str(exc) == "DATASET_CHANGED":
                 raise DatasetChangedError() from None
+            if str(exc) == "INVALID_CURSOR":
+                raise InvalidCapabilityCursor() from None
             raise CapabilityUnavailable() from None
         except SQLAlchemyError:
             raise CapabilityUnavailable() from None
@@ -112,6 +114,15 @@ class OrganizationCapabilities:
             if state is None or state.initialization_status != "complete":
                 meta = self.reads._meta(state) if state else {"dataset_epoch":None, "data_version":None, "next_cursor":None}
                 return self._read_result(db, None, meta)
+            if name in {"get_store", "list_store_employees"}:
+                self.reads._check_version(state, filters)
+                department = db.get(Department, args[0])
+                profile = db.get(StoreProfile, args[0]) if department else None
+                target_status = ("missing" if department is None else "not_store" if not profile or not profile.is_store
+                                 else "inactive" if department.status != "active" or department.is_virtual_root else None)
+                if target_status:
+                    result = self._read_result(db, None, self.reads._meta(state))
+                    return replace(result, observation=replace(result.observation, evidence={**result.observation.evidence, "target_status":target_status}))
             data, meta = getattr(self.reads, name + "_in_session")(db, *args, **filters)
             quality = None
             if name in {"get_store", "list_store_employees"}:
@@ -310,33 +321,55 @@ class OrganizationCapabilities:
     def get_change_logs(self, context, **filters):
         self._authorize(context)
         self._page_filters(filters)
+        filter_keys = ("object_type", "object_id", "source", "job_id", "actor", "action", "committed_after", "committed_before")
+        if set(filters) - set(filter_keys) - {"limit", "cursor", "dataset_epoch", "data_version"}:
+            raise InvalidCapabilityRequest()
+        normalized = {key:filters.get(key) for key in filter_keys}
+        normalized["limit"] = filters.get("limit", 100)
+        action = normalized["action"]
+        if action not in (None, "create", "update", "delete"):
+            raise InvalidCapabilityRequest()
+        for key in ("committed_after", "committed_before"):
+            value = normalized[key]
+            if value is not None:
+                if not isinstance(value, datetime) or value.utcoffset() is None:
+                    raise InvalidCapabilityRequest()
+                normalized[key] = value.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+        cursor = filters.get("cursor")
+        if cursor is not None and (not isinstance(cursor, str) or not cursor):
+            raise InvalidCapabilityCursor()
+        cursor_filters = {**normalized, "cursor":cursor}
         with self.sessions() as db, db.begin():
             self._bind_policy(db, context)
-            self.observations._state(db)
+            state = db.get(DatasetState, 1)
+            if state is None:
+                return self._read_result(db, None, {"dataset_epoch":None, "data_version":None, "next_cursor":None})
+            self.reads._check_version(state, filters)
+            last_id = self.reads._last_id(state, "change_logs", cursor_filters)
             stmt = select(ChangeLog).where(ChangeLog.object_type.in_(("store", "department", "employee", "sync_job"))).order_by(ChangeLog.id.desc())
             for key in ("object_type", "object_id", "source", "job_id", "actor"):
-                if filters.get(key) is not None: stmt = stmt.where(getattr(ChangeLog, key) == filters[key])
+                if normalized[key] is not None: stmt = stmt.where(getattr(ChangeLog, key) == normalized[key])
             before_null = or_(ChangeLog.before_data.is_(None), ChangeLog.before_data == JSON.NULL)
             after_null = or_(ChangeLog.after_data.is_(None), ChangeLog.after_data == JSON.NULL)
-            action = filters.get("action")
-            if action not in (None, "create", "update", "delete"): raise InvalidCapabilityRequest()
             if action == "create": stmt = stmt.where(before_null)
             if action == "delete": stmt = stmt.where(after_null, not_(before_null))
             if action == "update": stmt = stmt.where(not_(before_null), not_(after_null))
             for key, column, lower in (("committed_after", ChangeLog.committed_at, True), ("committed_before", ChangeLog.committed_at, False)):
-                value = filters.get(key)
-                if value:
-                    if value.tzinfo is None: raise InvalidCapabilityRequest()
-                    value = value.astimezone(timezone.utc).replace(tzinfo=None)
+                if normalized[key] is not None:
+                    value = datetime.fromisoformat(normalized[key])
                     stmt = stmt.where(column >= value if lower else column <= value)
-            if filters.get("cursor") is not None: stmt = stmt.where(ChangeLog.id < int(filters["cursor"]))
-            limit = filters.get("limit", 100)
+            if last_id is not None:
+                try:
+                    identifier = int(last_id)
+                except (TypeError, ValueError):
+                    raise InvalidCapabilityCursor() from None
+                stmt = stmt.where(ChangeLog.id < identifier)
+            limit = normalized["limit"]
             rows = list(db.scalars(stmt.limit(limit + 1)))
             page = rows[:limit]
             data = [{"id":r.id, "object_type":r.object_type, "object_id":r.object_id, "source":r.source, "actor":r.actor, "job_id":r.job_id,
                      "action":"create" if r.before_data is None else "delete" if r.after_data is None else "update",
                      "before":_sanitize(r.before_data), "after":_sanitize(r.after_data), "committed_at":utc_datetime(r.committed_at)} for r in page]
-            state = db.get(DatasetState, 1)
-            meta = self.reads._meta(state) if state else {"dataset_epoch":None, "data_version":None}
-            meta["next_cursor"] = str(page[-1].id) if len(rows) > limit else None
-            return self._read_result(db, data, meta)
+            next_id = str(page[-1].id) if len(rows) > limit else None
+            cursor = self.reads._next_cursor(state, "change_logs", cursor_filters, next_id)
+            return self._read_result(db, data, self.reads._meta(state, cursor))

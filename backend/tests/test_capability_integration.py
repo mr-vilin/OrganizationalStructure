@@ -747,9 +747,9 @@ def test_facade_logs_paginate_filter_and_drop_credential_payloads():
                 db.add(ChangeLog(id=identifier, object_type=object_type, object_id="a", source="admin", actor="agent", before_data=None, after_data={"status":"active", "notes":"Bearer SYNTHETIC_SECRET", "password":"SYNTHETIC_SECRET"}, committed_at=datetime.now()))
         service = facade(sessions)
         result = service.get_change_logs(agent(), object_id="a", action="create", limit=1)
-        assert result.data["data"][0]["id"] == 2 and result.data["meta"]["next_cursor"] == "2"
+        assert result.data["data"][0]["id"] == 2 and result.data["meta"]["next_cursor"] != "2"
         assert "SYNTHETIC_SECRET" not in str(result.to_dict())
-        next_page = service.get_change_logs(agent(), cursor="2", limit=1)
+        next_page = service.get_change_logs(agent(), object_id="a", action="create", cursor=result.data["meta"]["next_cursor"], limit=1)
         assert next_page.data["data"][0]["id"] == 1 and next_page.data["meta"]["next_cursor"] is None
     finally: engine.dispose()
 
@@ -867,4 +867,99 @@ def test_facade_operation_keeps_receipt_status_and_complete_async_audits():
         assert submitted.data["status"] == "submitted"
         assert submitted.data["summary"]["status"] == "succeeded"
         assert submitted.observation.execution == "submitted" and submitted.audit["audit_ids"] == (1,)
+    finally: engine.dispose()
+
+
+# Review round 1: bind Agent audit pagination to its observation snapshot.
+@pytest.mark.parametrize("change", ["epoch", "version", "expected_epoch", "expected_version", "filters"])
+def test_review_i1_log_cursor_rejects_dataset_or_filter_change(change):
+    sessions, engine = make_sessions()
+    try:
+        with sessions.begin() as db:
+            for identifier in (1, 2):
+                db.add(ChangeLog(id=identifier, object_type="store", object_id="a", source="admin", actor="agent", after_data={"is_store":True}, committed_at=datetime(2026, 1, identifier)))
+        service = facade(sessions)
+        first = service.get_change_logs(agent(), object_id="a", limit=1)
+        filters = {"object_id":"a", "limit":1, "cursor":first.data["meta"]["next_cursor"]}
+        if change in {"epoch", "version"}:
+            with sessions.begin() as db:
+                state = db.get(DatasetState, 1)
+                if change == "epoch": state.dataset_epoch = "restored"
+                else: state.data_version += 1
+        elif change == "expected_epoch": filters["dataset_epoch"] = "old"
+        elif change == "expected_version": filters["data_version"] = 6
+        else: filters["object_id"] = "b"
+        with pytest.raises(Exception) as caught: service.get_change_logs(agent(), **filters)
+        assert caught.value.code == ("INVALID_CURSOR" if change == "filters" else "DATASET_CHANGED")
+    finally: engine.dispose()
+
+
+def test_review_i1_time_filters_normalize_for_signed_log_cursor():
+    from datetime import timezone, timedelta
+    sessions, engine = make_sessions()
+    try:
+        with sessions.begin() as db:
+            for identifier in (1, 2, 3):
+                db.add(ChangeLog(id=identifier, object_type="store", object_id="a", source="admin", actor="agent", after_data={"is_store":True}, committed_at=datetime(2026, 1, identifier)))
+        service = facade(sessions)
+        after = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        before = datetime(2026, 1, 2, 23, tzinfo=timezone.utc)
+        first = service.get_change_logs(agent(), committed_after=after, committed_before=before, limit=1)
+        cursor = first.data["meta"]["next_cursor"]
+        assert first.data["data"][0]["id"] == 2 and cursor != "2"
+        tz = timezone(timedelta(hours=8))
+        second = service.get_change_logs(agent(), committed_after=after.astimezone(tz), committed_before=before.astimezone(tz), limit=1, cursor=cursor)
+        assert second.data["data"][0]["id"] == 1 and second.data["meta"]["next_cursor"] is None
+        with pytest.raises(Exception) as caught:
+            service.get_change_logs(agent(), committed_after=after + timedelta(seconds=1), committed_before=before, limit=1, cursor=cursor)
+        assert caught.value.code == "INVALID_CURSOR"
+        with pytest.raises(Exception) as caught:
+            service.get_change_logs(agent(), committed_after=datetime(2026, 1, 1), limit=1)
+        assert caught.value.code == "INVALID_CAPABILITY_REQUEST"
+    finally: engine.dispose()
+
+
+@pytest.mark.parametrize("target", ["missing", "department_only", "non_store", "inactive", "empty"])
+def test_review_i2_store_members_distinguish_invalid_target_from_empty_store(target):
+    sessions, engine = make_sessions()
+    try:
+        with sessions.begin() as db:
+            db.get(DatasetState, 1).coverage_status = "complete"
+            if target != "missing":
+                db.add(Department(id="shop", feishu_department_id="shop", name="shop", status="inactive" if target == "inactive" else "active", sync_quality="complete"))
+                if target != "department_only": db.add(StoreProfile(department_id="shop", is_store=target != "non_store"))
+        result = facade(sessions).list_store_employees(agent(), "shop")
+        if target == "empty":
+            assert result.data["data"] == () and result.observation.fact_quality == "resolved"
+        else:
+            assert result.data["data"] is None
+            assert result.observation.execution == "unconfirmed" and result.observation.fact_quality == "unknown"
+            assert result.observation.evidence["target_status"] in {"missing", "not_store", "inactive"}
+        assert result.data["meta"]["data_version"] == result.observation.data_version == 7
+    finally: engine.dispose()
+
+
+def test_review_i3_failed_operation_audits_survive_later_retry():
+    sessions, engine = make_sessions()
+    operation_id = running_receipt(sessions)
+    try:
+        with sessions.begin() as db:
+            db.add(ChangeLog(object_type="sync_job", object_id="job", source="admin", actor="agent", job_id="job", after_data={"status":"running"}, committed_at=datetime.now()))
+        SqlSyncJobRepository(sessions).mark_failed("job", 1, "SYNC_FAILED", "Bearer SYNTHETIC_SECRET", datetime.now())
+        service = facade(sessions)
+        failed = service.get_operation(agent(), operation_id=operation_id)
+        assert failed.audit["audit_ids"] == (1,) and failed.data["status"] == "failed"
+        service.retry_sync_job(agent(), "job", "later-retry")
+        historical = service.get_operation(agent(), operation_id=operation_id)
+        assert historical.audit["audit_ids"] == (1,) and historical.data["status"] == "failed"
+        assert "SYNTHETIC_SECRET" not in str(historical.to_dict())
+    finally: engine.dispose()
+
+
+@pytest.mark.parametrize("expected", [{"dataset_epoch":"old"}, {"data_version":6}])
+def test_review_i1_explicit_dataset_expectation_applies_to_first_page(expected):
+    sessions, engine = make_sessions()
+    try:
+        with pytest.raises(Exception) as caught: facade(sessions).get_change_logs(agent(), **expected)
+        assert caught.value.code == "DATASET_CHANGED" and caught.value.status == 409
     finally: engine.dispose()
