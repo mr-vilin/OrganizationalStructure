@@ -33,7 +33,9 @@ def validate_principal(
 ) -> AgentPrincipal:
     """仅供可信配置调用方使用；重新校验以防 model_construct 绕过验证。"""
     try:
-        raw = value.model_dump() if isinstance(value, AgentPrincipal) else value
+        # 直接复制原始字段：不调用 serializer，不转换非法类型，也不产生输入告警。
+        # 保留 model_copy 注入的额外字段，让 extra=forbid 一并严格拒绝。
+        raw = value.__dict__.copy() if isinstance(value, AgentPrincipal) else value
         principal = AgentPrincipal.model_validate(raw)
     except (ValidationError, ValueError, TypeError):
         raise AuthenticationError() from None

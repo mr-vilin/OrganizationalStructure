@@ -109,3 +109,89 @@ for prefix in ('app.capabilities', 'app.persistence', 'sqlalchemy', 'app.main'):
 """
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("entry", ["validate", "decide", "trace"])
+@pytest.mark.parametrize("construction", ["construct", "copy"])
+@pytest.mark.parametrize("field, bad_kind", [
+    ("actor_id", "dict"), ("actor_id", "list"), ("actor_id", "exception"),
+    ("actor_id", "secret"), ("actor_type", "dict"), ("environment", "dict"),
+    ("run_id", "dict"), ("case_id", "dict"),
+])
+@pytest.mark.parametrize("warning_channel", ["record", "stderr"])
+def test_invalid_constructed_principal_never_leaks_diagnostics(
+    entry, construction, field, bad_kind, warning_channel, capfd, caplog,
+):
+    import warnings
+
+    from app.mcp.policy import decide
+    from app.mcp.trace import Tracer
+
+    caplog.set_level("DEBUG")
+    marker = "synthetic-review-secret"
+    bad_value = {
+        "dict": {"password": marker}, "list": [marker],
+        "exception": ValueError(marker), "secret": SecretStr(marker),
+    }[bad_kind]
+    if construction == "construct":
+        forged = AgentPrincipal.model_construct(**principal(**{field: bad_value}))
+    else:
+        forged = AgentPrincipal(**principal()).model_copy(update={field: bad_value})
+    tracer = Tracer()
+    captured_error = None
+    with warnings.catch_warnings(record=warning_channel == "record") as diagnostic_warnings:
+        warnings.simplefilter("always")
+        if warning_channel == "stderr":
+            # 直接使用标准格式写 stderr，避免 pytest 自身的 warning 收集器代收。
+            def emit_warning(message, category, filename, lineno, file=None, line=None):
+                (file or sys.stderr).write(warnings.formatwarning(message, category, filename, lineno, line))
+            warnings.showwarning = emit_warning
+        if entry == "decide":
+            result = decide(forged, "get_operation", False)
+            assert result.allowed is False
+            assert result.code == "CAPABILITY_FORBIDDEN"
+        else:
+            with pytest.raises(AuthenticationError) as captured:
+                if entry == "validate":
+                    validate_principal(forged, environment="production")
+                else:
+                    tracer.record(tool_name="get_operation", principal=forged)
+            captured_error = captured.value
+    streams = capfd.readouterr()
+    warning_text = "".join(str(item.message) for item in diagnostic_warnings or [])
+    rendered_error = "" if captured_error is None else str(captured_error) + repr(captured_error)
+    assert marker not in warning_text + streams.out + streams.err + caplog.text + rendered_error
+    assert not diagnostic_warnings
+    assert streams.err == ""
+    assert tracer.records == ()
+
+
+
+@pytest.mark.parametrize("entry", ["validate", "decide", "trace"])
+def test_copied_principal_extra_sensitive_value_is_rejected_without_serialization(entry, capfd, caplog):
+    import warnings
+
+    from app.mcp.policy import decide
+    from app.mcp.trace import Tracer
+
+    caplog.set_level("DEBUG")
+    marker = "synthetic-review-secret"
+    forged = AgentPrincipal(**principal()).model_copy(update={"password": marker})
+    tracer = Tracer()
+    rendered_error = ""
+    with warnings.catch_warnings(record=True) as diagnostic_warnings:
+        warnings.simplefilter("always")
+        if entry == "decide":
+            assert decide(forged, "get_operation", False).allowed is False
+        else:
+            with pytest.raises(AuthenticationError) as captured:
+                if entry == "validate":
+                    validate_principal(forged, environment="production")
+                else:
+                    tracer.record(tool_name="get_operation", principal=forged)
+            rendered_error = str(captured.value) + repr(captured.value)
+    streams = capfd.readouterr()
+    assert not diagnostic_warnings
+    assert streams.err == ""
+    assert marker not in streams.out + streams.err + caplog.text + rendered_error
+    assert tracer.records == ()
