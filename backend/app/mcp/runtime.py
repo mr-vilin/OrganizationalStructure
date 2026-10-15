@@ -3,12 +3,14 @@ import asyncio
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 import math
+import logging
 
 from mcp.server import MCPServer
 from mcp.server.request_state import RequestStateSecurity
 from mcp.types import CallToolResult, TextContent
 from pydantic import SecretStr
-from starlette.responses import JSONResponse
+from starlette.datastructures import Headers
+from starlette.responses import JSONResponse, Response
 
 from .auth import AuthenticationError, authenticate, validate_principal
 from .models import ToolResult
@@ -38,6 +40,33 @@ class ServiceAuthentication:
                              principal=self.principal, environment=self.environment)
             except AuthenticationError:
                 await JSONResponse({"error": {"code": "MCP_SERVICE_UNAUTHORIZED"}}, status_code=401)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+class SafeTransportBoundary:
+    """在 SDK 记录拒绝头原文前安全拒绝；每个 ASGI app 独立实例。"""
+    def __init__(self, app, *, settings):
+        self.app, self.settings = app, settings
+
+    @staticmethod
+    def _allowed(value, allowed):
+        # 保持官方精确匹配及显式端口通配规则；不记录待校验值。
+        return value is not None and (
+            value in allowed or any(rule.endswith(":*") and value.startswith(rule[:-1]) for rule in allowed)
+        )
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and self.settings.enable_dns_rebinding_protection:
+            headers = Headers(scope=scope)
+            if not self._allowed(headers.get("host"), self.settings.allowed_hosts):
+                logging.getLogger(__name__).warning("MCP_HOST_REJECTED")
+                await Response("MCP_HOST_REJECTED", status_code=421)(scope, receive, send)
+                return
+            origin = headers.get("origin")
+            if origin and not self._allowed(origin, self.settings.allowed_origins):
+                logging.getLogger(__name__).warning("MCP_ORIGIN_REJECTED")
+                await Response("MCP_ORIGIN_REJECTED", status_code=403)(scope, receive, send)
                 return
         await self.app(scope, receive, send)
 
@@ -92,6 +121,10 @@ class CapabilityServer(MCPServer):
 
     def streamable_http_app(self, **kwargs):
         app = super().streamable_http_app(**kwargs)
+        security = kwargs.get("transport_security")
+        if security is not None:
+            app.add_middleware(SafeTransportBoundary, settings=security)
+        # add_middleware 的后加项在外层：先认证，再安全拒绝，再由 SDK 原防护复核。
         app.add_middleware(ServiceAuthentication, token=self._inbound_token,
                            principal=self._principal, environment=self._environment)
         return app
