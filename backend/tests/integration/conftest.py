@@ -41,3 +41,15 @@ def mysql_sessions():
                     transaction.rollback()
     finally:
         engine.dispose()
+
+
+@pytest.fixture
+def evaluation_mysql_database():
+    """Evaluation 专用独立连接/串行 reset；不改变 mysql_sessions 的回滚语义。"""
+    from app.evaluation.fixtures import evaluation_database
+
+    url = os.environ.get('ORG_TEST_DATABASE_URL')
+    if not url:
+        pytest.skip('未提供 ORG_TEST_DATABASE_URL；Evaluation 真实 MySQL 验收尚未执行')
+    with evaluation_database(url) as sessions:
+        yield sessions
