@@ -6,6 +6,10 @@ from functools import lru_cache
 
 from fastapi import Cookie, Depends, Header, HTTPException, Request
 
+from .capabilities.service import OrganizationCapabilities
+from .capabilities.receipts import ReceiptRepository
+from .capabilities.observations import ObservationService
+from .stores.service import StoreAdminService
 from .config import get_settings
 from .persistence.database import create_mysql_engine, session_factory
 from .persistence.read_service import SqlReadService
@@ -20,6 +24,7 @@ class Runtime:
     reads: SqlReadService
     identities: SqlIdentityRepository
     jobs: SqlSyncJobRepository
+    capabilities: OrganizationCapabilities
 
 
 @lru_cache
@@ -30,7 +35,10 @@ def get_runtime() -> Runtime | None:
     engine = create_mysql_engine(settings.database_url)
     sessions = session_factory(engine)
     pepper = settings.session_secret.get_secret_value()
-    return Runtime(engine, sessions, SqlReadService(sessions, pepper), SqlIdentityRepository(sessions, pepper), SqlSyncJobRepository(sessions))
+    reads = SqlReadService(sessions, pepper)
+    jobs = SqlSyncJobRepository(sessions)
+    capabilities = OrganizationCapabilities(sessions, reads, StoreAdminService(sessions), jobs, ReceiptRepository(), ObservationService(), environment=settings.agent_environment)
+    return Runtime(engine, sessions, reads, SqlIdentityRepository(sessions, pepper), jobs, capabilities)
 
 
 def get_read_service():

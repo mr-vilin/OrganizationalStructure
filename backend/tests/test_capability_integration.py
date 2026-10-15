@@ -542,3 +542,329 @@ def test_store_write_dependency_reads_emit_mysql_current_read_sql():
         unsafe = [sorted(tables) for tables, sql in observed if 'FOR UPDATE' not in sql]
         assert unsafe == [], f'写依赖仍有普通一致性读取: {unsafe}'
     finally: engine.dispose()
+
+
+# Task 4B：通过公开能力验证策略、读取与原子写入。
+def facade(sessions, environment="test"):
+    from app.capabilities.service import OrganizationCapabilities
+    from app.persistence.read_service import SqlReadService
+    return OrganizationCapabilities(sessions, SqlReadService(sessions, "test-secret"), StoreAdminService(sessions), SqlSyncJobRepository(sessions), ReceiptRepository(), ObservationService(), environment=environment)
+
+
+def agent(**values):
+    return AgentContext(**{"actor_type":"human_agent", "actor_id":"agent", "environment":"test", **values})
+
+
+def test_facade_preview_apply_replay_epoch_and_operation_lookup():
+    from app.capabilities.errors import OperationConflict, OperationNotFound
+    sessions, engine = make_sessions()
+    seed_store(sessions)
+    try:
+        service = facade(sessions)
+        preview = service.preview_store_changes(agent(), [StorePatch("a", True)], 7)
+        assert preview.operation_id is None and preview.data["data"]["data_version"] == 7
+        result = service.apply_store_changes(agent(), [StorePatch("a", True)], 7, "key", expected_epoch="epoch")
+        assert result.data["changed_count"] == 1 and result.observation.data_version == 8
+        assert set(result.to_dict()) == {"operation_id", "data", "observation", "audit"}
+        replay = service.apply_store_changes(agent(), [StorePatch("a", True)], 7, "key", expected_epoch="epoch")
+        assert replay.to_dict() == result.to_dict()
+        assert service.get_operation(agent(), idempotency_key="key").operation_id == result.operation_id
+        assert service.get_operation(agent(), operation_id=result.operation_id).audit["audit_ids"] == (1,)
+        with pytest.raises(OperationNotFound): service.get_operation(agent(actor_id="other"), idempotency_key="key")
+        with pytest.raises(OperationConflict): service.apply_store_changes(agent(), [StorePatch("a", True, notes=None)], 7, "key", expected_epoch="epoch")
+        with sessions.begin() as db:
+            db.get(DatasetState, 1).dataset_epoch = "restored"
+            db.get(DatasetState, 1).data_version = 7
+        with pytest.raises(Exception) as caught: service.apply_store_changes(agent(), [StorePatch("a", True)], 7, "other", expected_epoch="epoch")
+        assert caught.value.code == "DATASET_CHANGED"
+        historical = service.get_operation(agent(), idempotency_key="key")
+        assert historical.observation.execution == "unconfirmed" and historical.observation.fact_quality == "inconsistent"
+        assert (historical.observation.dataset_epoch, historical.observation.data_version) == ("epoch", 8)
+        with sessions() as db:
+            assert len(list(db.scalars(select(ChangeLog)))) == 1
+            assert len(list(db.scalars(select(OperationReceipt)))) == 1
+    finally: engine.dispose()
+
+
+@pytest.mark.parametrize("context,environment,error", [
+    (agent(environment="production"), "production", "CONFIRMATION_REQUIRED"),
+    (agent(environment="production", approved="yes"), "production", "CONFIRMATION_REQUIRED"),
+    (agent(actor_type="ci_agent", environment="production", approved=True, run_id="test-a"), "production", "CAPABILITY_NOT_ALLOWED"),
+    (agent(actor_type="ci_agent", run_id="run-a"), "test", "CAPABILITY_NOT_ALLOWED"),
+    (agent(), "production", "CAPABILITY_NOT_ALLOWED"),
+])
+def test_facade_policy_denies_before_any_write(context, environment, error):
+    sessions, engine = make_sessions()
+    try:
+        with pytest.raises(Exception) as caught:
+            facade(sessions, environment).apply_store_changes(context, [StorePatch("a", True)], 7, "key", "arbitrary-token", expected_epoch="epoch")
+        assert caught.value.code == error
+        with sessions() as db: assert list(db.scalars(select(OperationReceipt))) == []
+    finally: engine.dispose()
+
+
+def test_facade_ci_memory_and_production_confirmation():
+    sessions, engine = make_sessions()
+    seed_store(sessions)
+    try:
+        result = facade(sessions).apply_store_changes(agent(actor_type="ci_agent", run_id="test-run"), [StorePatch("a", True)], 7, "key", expected_epoch="epoch")
+        assert result.observation.execution == "submitted"
+        assert facade(sessions, "production").status(agent(environment="production")).operation_id is None
+    finally: engine.dispose()
+
+
+def test_facade_read_pagination_ambiguity_and_target_quality():
+    sessions, engine = make_sessions()
+    seed_store(sessions)
+    try:
+        with sessions.begin() as db:
+            db.get(DatasetState, 1).coverage_status = "complete"
+            db.get(Department, "a").sync_quality = "pending_verification"
+            db.add_all([Department(id=f"x{i:03}", feishu_department_id=f"x{i:03}", name="重名", sync_quality="complete") for i in range(505)])
+        service = facade(sessions)
+        for result in [service.status(agent()), service.get_department(agent(), "a"), service.list_employees(agent(), limit=1), service.get_employee(agent(), "u"), service.list_stores(agent()), service.get_store(agent(), "a"), service.list_store_employees(agent(), "a")]:
+            assert result.observation.data_version == result.data["meta"]["data_version"] == 7
+            assert result.operation_id is None and result.observation.execution != "verified"
+        assert service.get_department(agent(), "a").observation.fact_quality == "unknown"
+        with pytest.raises(Exception) as caught: service.find_departments(agent(), name="重名")
+        assert caught.value.code == "AMBIGUOUS_TARGET" and len(caught.value.candidates) == 505
+        by_id = service.find_departments(agent(), department_id="x504")
+        assert by_id.data["data"][0]["id"] == "x504"
+        first = service.find_departments(agent(), limit=1)
+        assert first.data["meta"]["next_cursor"]
+        with pytest.raises(Exception) as caught: service.find_departments(agent(), path=["重名"])
+        assert caught.value.code == "AMBIGUOUS_TARGET"
+    finally: engine.dispose()
+
+
+def test_facade_sync_reuse_retry_and_safe_evidence():
+    sessions, engine = make_sessions()
+    seed_store(sessions)
+    try:
+        with sessions.begin() as db: db.add(SystemSetting(key="task_queue_lock", value="1"))
+        service = facade(sessions)
+        one = service.request_sync(agent(), "full", "sync-1")
+        two = service.request_sync(agent(), "full", "sync-2")
+        assert one.data["job_id"] == two.data["job_id"] and one.observation.execution == "accepted"
+        with sessions.begin() as db:
+            job = db.get(SyncJob, one.data["job_id"])
+            job.status, job.error_detail, job.error_code = "failed", "Bearer SYNTHETIC_SECRET", "BAD secret"
+            db.add(SyncJobDetail(id=1, job_id=job.id, object_type="employee", object_id="u", status="failed", error_message="Bearer SYNTHETIC_SECRET"))
+        safe = service.get_sync_job(agent(), one.data["job_id"])
+        assert "SYNTHETIC_SECRET" not in str(safe.to_dict()) and safe.observation.execution == "failed"
+        retried = service.retry_sync_job(agent(), one.data["job_id"], "retry")
+        assert retried.observation.execution == "accepted"
+        assert service.retry_sync_job(agent(), one.data["job_id"], "retry").operation_id == retried.operation_id
+        with pytest.raises(Exception): service.request_sync(agent(), "full", "bad", root_department_id="a")
+        with pytest.raises(Exception): service.request_sync(agent(), "subtree", "bad-subtree")
+    finally: engine.dispose()
+
+
+@pytest.mark.parametrize("failure", ["receipt", "audit"])
+def test_facade_atomic_store_failure_rolls_back_everything(failure):
+    from app.capabilities.errors import CapabilityUnavailable
+    sessions, engine = make_sessions()
+    seed_store(sessions)
+    model, hook = (OperationReceipt, "before_update") if failure == "receipt" else (ChangeLog, "before_insert")
+    def injected(*args): raise RuntimeError("Bearer SYNTHETIC_SECRET")
+    event.listen(model, hook, injected)
+    try:
+        with pytest.raises(CapabilityUnavailable) as caught:
+            facade(sessions).apply_store_changes(agent(), [StorePatch("a", True)], 7, "rollback", expected_epoch="epoch")
+        assert "SYNTHETIC_SECRET" not in str(caught.value.to_dict())
+    finally: event.remove(model, hook, injected)
+    try:
+        with sessions() as db:
+            assert list(db.scalars(select(OperationReceipt))) == []
+            assert list(db.scalars(select(ChangeLog))) == []
+            assert list(db.scalars(select(EmployeeStore))) == []
+            assert db.get(StoreProfile, "a") is None
+            assert db.get(DatasetState, 1).data_version == 7
+    finally: engine.dispose()
+
+
+def test_facade_ci_checks_actual_bind_not_declared_environment(tmp_path):
+    from app.capabilities.errors import CapabilityNotAllowed
+    sessions, engine = make_sessions()
+    other_engine = create_engine("sqlite:///" + str(tmp_path / "unit.db"))
+    try:
+        other_sessions = sessionmaker(other_engine)
+        with pytest.raises(CapabilityNotAllowed): facade(other_sessions).status(agent(actor_type="ci_agent", run_id="test-a"))
+        from unittest.mock import Mock
+        from sqlalchemy.engine import make_url
+        service = facade(sessions)
+        for url, actual, permitted in [
+            ("mysql+pymysql://localhost/unit_test", "unit_test", True),
+            ("mysql+pymysql://localhost/production", "production", False),
+            ("mysql+mysqldb://localhost/unit_test", "unit_test", False),
+            ("mysql+pymysql://localhost/unit_test", "production", False),
+        ]:
+            db = Mock()
+            db.get_bind.return_value.engine.url = make_url(url)
+            db.scalar.return_value = actual
+            if permitted: service._bind_policy(db, agent(actor_type="ci_agent", run_id="test-a"))
+            else:
+                with pytest.raises(CapabilityNotAllowed): service._bind_policy(db, agent(actor_type="ci_agent", run_id="test-a"))
+    finally:
+        engine.dispose()
+        other_engine.dispose()
+
+
+def test_facade_read_snapshot_uses_one_session_and_target_quality():
+    sessions, engine = make_sessions()
+    seed_store(sessions)
+    try:
+        with sessions.begin() as db:
+            db.get(DatasetState, 1).coverage_status = "complete"
+            db.get(Employee, "u").primary_store_status = "inconsistent"
+            db.add(StoreProfile(department_id="a", is_store=True))
+        service = facade(sessions)
+        assert service.get_employee(agent(), "u").observation.fact_quality == "inconsistent"
+        observed = []
+        original = service.reads.get_department_in_session
+        def capture(db, department_id):
+            observed.append(db)
+            return original(db, department_id)
+        service.reads.get_department_in_session = capture
+        base = service.observations._base
+        def capture_obs(db, *args, **kwargs):
+            assert observed == [db]
+            return base(db, *args, **kwargs)
+        service.observations._base = capture_obs
+        assert service.get_department(agent(), "a").data["meta"]["data_version"] == 7
+        service.observations._base = base
+        with sessions.begin() as db: db.get(DatasetState, 1).initialization_status = "pending"
+        unknown = service.status(agent())
+        assert unknown.data["data"] is None and unknown.observation.fact_quality == "unknown"
+    finally: engine.dispose()
+
+
+def test_facade_logs_paginate_filter_and_drop_credential_payloads():
+    sessions, engine = make_sessions()
+    try:
+        with sessions.begin() as db:
+            for identifier, object_type in [(1,"store"), (2,"store"), (3,"api_client")]:
+                db.add(ChangeLog(id=identifier, object_type=object_type, object_id="a", source="admin", actor="agent", before_data=None, after_data={"status":"active", "notes":"Bearer SYNTHETIC_SECRET", "password":"SYNTHETIC_SECRET"}, committed_at=datetime.now()))
+        service = facade(sessions)
+        result = service.get_change_logs(agent(), object_id="a", action="create", limit=1)
+        assert result.data["data"][0]["id"] == 2 and result.data["meta"]["next_cursor"] == "2"
+        assert "SYNTHETIC_SECRET" not in str(result.to_dict())
+        next_page = service.get_change_logs(agent(), cursor="2", limit=1)
+        assert next_page.data["data"][0]["id"] == 1 and next_page.data["meta"]["next_cursor"] is None
+    finally: engine.dispose()
+
+
+def test_facade_unknown_operation_and_history_never_mutate_receipt():
+    from app.capabilities.errors import InvalidCapabilityRequest
+    sessions, engine = make_sessions()
+    try:
+        with sessions.begin() as db:
+            receipt = new_receipt(db)
+            receipt.status = "future_status"
+            operation_id = receipt.operation_id
+        result = facade(sessions).get_operation(agent(), operation_id=operation_id)
+        assert result.observation.execution == "unconfirmed" and result.observation.fact_quality == "unknown"
+        with pytest.raises(InvalidCapabilityRequest): facade(sessions).get_operation(agent())
+        with sessions() as db: assert db.get(OperationReceipt, operation_id).status == "future_status"
+    finally: engine.dispose()
+
+
+def test_facade_runtime_and_settings_wiring(monkeypatch):
+    from app import dependencies
+    from app.config import Settings
+    from pydantic import ValidationError
+    from app.capabilities.service import OrganizationCapabilities
+    sessions, engine = make_sessions()
+    try:
+        settings = Settings(database_url="mysql+pymysql://localhost/unit_test", session_secret="unit-secret", agent_environment="test")
+        monkeypatch.setattr(dependencies, "get_settings", lambda: settings)
+        monkeypatch.setattr(dependencies, "create_mysql_engine", lambda url: engine)
+        monkeypatch.setattr(dependencies, "session_factory", lambda bind: sessions)
+        dependencies.get_runtime.cache_clear()
+        runtime = dependencies.get_runtime()
+        assert isinstance(runtime.capabilities, OrganizationCapabilities)
+        assert runtime.capabilities.reads is runtime.reads and runtime.capabilities.jobs is runtime.jobs
+        assert runtime.capabilities.environment == "test"
+        with pytest.raises(ValidationError): Settings(agent_environment="staging")
+        from app.persistence.database import create_mysql_engine
+        with pytest.raises(ValueError): create_mysql_engine("sqlite://")
+    finally:
+        dependencies.get_runtime.cache_clear()
+        engine.dispose()
+
+
+@pytest.mark.parametrize("target_quality", ["unknown", "pending_verification", "inconsistent"])
+def test_facade_store_quality_and_empty_members_keep_target_uncertainty(target_quality):
+    sessions, engine = make_sessions()
+    seed_store(sessions)
+    try:
+        with sessions.begin() as db:
+            db.get(DatasetState, 1).coverage_status = "complete"
+            db.get(Department, "a").sync_quality = target_quality
+            db.add(StoreProfile(department_id="a", is_store=True))
+        service = facade(sessions)
+        expected = "inconsistent" if target_quality == "inconsistent" else "unknown"
+        assert service.get_store(agent(), "a").observation.fact_quality == expected
+        assert service.list_stores(agent()).observation.fact_quality == expected
+        assert service.list_store_employees(agent(), "a").observation.fact_quality == expected
+    finally: engine.dispose()
+
+
+@pytest.mark.parametrize("action", ["submit", "retry"])
+def test_facade_sync_receipt_failure_rolls_back_job_and_audit(action):
+    from app.capabilities.errors import CapabilityUnavailable
+    sessions, engine = make_sessions()
+    now = datetime.now()
+    with sessions.begin() as db:
+        db.add(SystemSetting(key="task_queue_lock", value="1"))
+        if action == "retry": db.add(SyncJob(id="failed", type="full", requested_by="old", status="failed", attempt=1, created_at=now, updated_at=now))
+    def fail(*args): raise RuntimeError("INJECTED_RECEIPT_FAILURE")
+    event.listen(OperationReceipt, "before_update", fail)
+    try:
+        service = facade(sessions)
+        with pytest.raises(CapabilityUnavailable):
+            if action == "submit": service.request_sync(agent(), "full", "atomic")
+            else: service.retry_sync_job(agent(), "failed", "atomic")
+    finally: event.remove(OperationReceipt, "before_update", fail)
+    try:
+        with sessions() as db:
+            assert list(db.scalars(select(OperationReceipt))) == []
+            assert list(db.scalars(select(ChangeLog))) == []
+            if action == "submit": assert list(db.scalars(select(SyncJob))) == []
+            else:
+                job = db.get(SyncJob, "failed")
+                assert job.status == "failed" and job.attempt == 1 and job.requested_by == "old"
+    finally: engine.dispose()
+
+
+def test_facade_confirmation_success_missing_epoch_and_normalized_idempotency():
+    from app.capabilities.errors import InvalidCapabilityRequest
+    sessions, engine = make_sessions()
+    seed_store(sessions)
+    try:
+        service = facade(sessions, "production")
+        context = agent(environment="production", approved=True)
+        with pytest.raises(InvalidCapabilityRequest): service.apply_store_changes(context, [StorePatch("a", True)], 7, "missing")
+        result = service.apply_store_changes(context, [StorePatch("a", True, " code ")], 7, "key", expected_epoch="epoch")
+        replay = service.apply_store_changes(context, [StorePatch("a", True, "code")], 7, "key", expected_epoch="epoch")
+        assert result.to_dict() == replay.to_dict()
+        with sessions() as db: assert db.get(StoreProfile, "a").store_code == "code"
+    finally: engine.dispose()
+
+
+
+def test_facade_operation_keeps_receipt_status_and_complete_async_audits():
+    sessions, engine = make_sessions()
+    operation_id = running_receipt(sessions)
+    try:
+        with sessions.begin() as db:
+            db.add(ChangeLog(object_type="sync_job", object_id="job", source="admin", actor="agent", job_id="job", after_data={"status":"queued"}, committed_at=datetime.now()))
+        service = facade(sessions)
+        running = service.get_operation(agent(), operation_id=operation_id)
+        assert running.observation.execution == "running" and running.audit["audit_ids"] == (1,)
+        SqlSyncJobRepository(sessions).mark_succeeded("job", 1, datetime.now())
+        submitted = service.get_operation(agent(), operation_id=operation_id)
+        assert submitted.data["status"] == "submitted"
+        assert submitted.data["summary"]["status"] == "succeeded"
+        assert submitted.observation.execution == "submitted" and submitted.audit["audit_ids"] == (1,)
+    finally: engine.dispose()

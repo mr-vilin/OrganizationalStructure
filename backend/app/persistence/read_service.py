@@ -31,88 +31,109 @@ class SqlReadService(ReadService):
 
     def status(self):
         with self._sessions() as db, db.begin():
-            state = self._state(db)
-            return ({"initialization_status": state.initialization_status, "coverage_status": state.coverage_status}, self._meta(state))
+            return self.status_in_session(db)
+
+    def status_in_session(self, db: Session):
+        state = self._state(db)
+        return ({"initialization_status": state.initialization_status, "coverage_status": state.coverage_status}, self._meta(state))
 
     def list_departments(self, **filters):
         with self._sessions() as db, db.begin():
-            state = self._state(db)
-            self._check_version(state, filters)
-            stmt = select(Department).order_by(Department.id).limit(filters.get("limit", 100) + 1)
-            if not filters.get("include_inactive"):
-                stmt = stmt.where(Department.status == "active")
-            if filters.get("parent_id") is not None:
-                stmt = stmt.where(Department.parent_id == filters["parent_id"])
-            if filters.get("root_id") is not None:
-                if filters.get("include_descendants"):
-                    tree = select(Department.id).where(Department.id == filters["root_id"]).cte("department_tree", recursive=True)
-                    tree = tree.union_all(select(Department.id).join(tree, Department.parent_id == tree.c.id))
-                    stmt = stmt.where(Department.id.in_(select(tree.c.id)))
-                else:
-                    stmt = stmt.where(Department.id == filters["root_id"])
-            last_id = self._last_id(state, "departments", filters)
-            if last_id:
-                stmt = stmt.where(Department.id > last_id)
-            rows = list(db.scalars(stmt))
-            page, next_cursor = self._page(rows, filters.get("limit", 100))
-            return ([self._department(db, row) for row in page], self._meta(state, self._next_cursor(state, "departments", filters, next_cursor)))
+            return self.list_departments_in_session(db, **filters)
+
+    def list_departments_in_session(self, db: Session, **filters):
+        state = self._state(db)
+        self._check_version(state, filters)
+        stmt = select(Department).order_by(Department.id).limit(filters.get("limit", 100) + 1)
+        if not filters.get("include_inactive"):
+            stmt = stmt.where(Department.status == "active")
+        if filters.get("parent_id") is not None:
+            stmt = stmt.where(Department.parent_id == filters["parent_id"])
+        if filters.get("root_id") is not None:
+            if filters.get("include_descendants"):
+                tree = select(Department.id).where(Department.id == filters["root_id"]).cte("department_tree", recursive=True)
+                tree = tree.union_all(select(Department.id).join(tree, Department.parent_id == tree.c.id))
+                stmt = stmt.where(Department.id.in_(select(tree.c.id)))
+            else:
+                stmt = stmt.where(Department.id == filters["root_id"])
+        last_id = self._last_id(state, "departments", filters)
+        if last_id:
+            stmt = stmt.where(Department.id > last_id)
+        rows = list(db.scalars(stmt))
+        page, next_cursor = self._page(rows, filters.get("limit", 100))
+        return ([self._department(db, row) for row in page], self._meta(state, self._next_cursor(state, "departments", filters, next_cursor)))
 
     def get_department(self, department_id: str):
         with self._sessions() as db, db.begin():
-            state, row = self._state(db), db.get(Department, department_id)
-            return (self._department(db, row) if row else None, self._meta(state))
+            return self.get_department_in_session(db, department_id)
+
+    def get_department_in_session(self, db: Session, department_id: str):
+        state, row = self._state(db), db.get(Department, department_id)
+        return (self._department(db, row) if row else None, self._meta(state))
 
     def list_employees(self, **filters):
         with self._sessions() as db, db.begin():
-            state = self._state(db)
-            self._check_version(state, filters)
-            stmt = select(Employee).distinct().order_by(Employee.id).limit(filters.get("limit", 100) + 1)
-            if not filters.get("include_inactive"):
-                stmt = stmt.where(Employee.status == "active")
-            if filters.get("department_id"):
-                department_ids = select(EmployeeDepartment.employee_id).where(EmployeeDepartment.active.is_(True))
-                if filters.get("include_descendants"):
-                    tree = select(Department.id).where(Department.id == filters["department_id"]).cte("employee_department_tree", recursive=True)
-                    tree = tree.union_all(select(Department.id).join(tree, Department.parent_id == tree.c.id))
-                    department_ids = department_ids.where(EmployeeDepartment.department_id.in_(select(tree.c.id)))
-                else:
-                    department_ids = department_ids.where(EmployeeDepartment.department_id == filters["department_id"])
-                stmt = stmt.where(Employee.id.in_(department_ids))
-            if filters.get("store_id"):
-                stmt = stmt.where(Employee.id.in_(select(EmployeeStore.employee_id).where(EmployeeStore.store_id == filters["store_id"])))
-            if filters.get("primary_store_id"):
-                stmt = stmt.where(Employee.id.in_(select(EmployeeStore.employee_id).where(EmployeeStore.store_id == filters["primary_store_id"], EmployeeStore.is_primary.is_(True))))
-            last_id = self._last_id(state, "employees", filters)
-            if last_id:
-                stmt = stmt.where(Employee.id > last_id)
-            rows = list(db.scalars(stmt))
-            page, next_cursor = self._page(rows, filters.get("limit", 100))
-            return ([self._employee(db, row) for row in page], self._meta(state, self._next_cursor(state, "employees", filters, next_cursor)))
+            return self.list_employees_in_session(db, **filters)
+
+    def list_employees_in_session(self, db: Session, **filters):
+        state = self._state(db)
+        self._check_version(state, filters)
+        stmt = select(Employee).distinct().order_by(Employee.id).limit(filters.get("limit", 100) + 1)
+        if not filters.get("include_inactive"):
+            stmt = stmt.where(Employee.status == "active")
+        if filters.get("department_id"):
+            department_ids = select(EmployeeDepartment.employee_id).where(EmployeeDepartment.active.is_(True))
+            if filters.get("include_descendants"):
+                tree = select(Department.id).where(Department.id == filters["department_id"]).cte("employee_department_tree", recursive=True)
+                tree = tree.union_all(select(Department.id).join(tree, Department.parent_id == tree.c.id))
+                department_ids = department_ids.where(EmployeeDepartment.department_id.in_(select(tree.c.id)))
+            else:
+                department_ids = department_ids.where(EmployeeDepartment.department_id == filters["department_id"])
+            stmt = stmt.where(Employee.id.in_(department_ids))
+        if filters.get("store_id"):
+            stmt = stmt.where(Employee.id.in_(select(EmployeeStore.employee_id).where(EmployeeStore.store_id == filters["store_id"])))
+        if filters.get("primary_store_id"):
+            stmt = stmt.where(Employee.id.in_(select(EmployeeStore.employee_id).where(EmployeeStore.store_id == filters["primary_store_id"], EmployeeStore.is_primary.is_(True))))
+        last_id = self._last_id(state, "employees", filters)
+        if last_id:
+            stmt = stmt.where(Employee.id > last_id)
+        rows = list(db.scalars(stmt))
+        page, next_cursor = self._page(rows, filters.get("limit", 100))
+        return ([self._employee(db, row) for row in page], self._meta(state, self._next_cursor(state, "employees", filters, next_cursor)))
 
     def get_employee(self, employee_id: str):
         with self._sessions() as db, db.begin():
-            state, row = self._state(db), db.get(Employee, employee_id)
-            return (self._employee(db, row) if row else None, self._meta(state))
+            return self.get_employee_in_session(db, employee_id)
+
+    def get_employee_in_session(self, db: Session, employee_id: str):
+        state, row = self._state(db), db.get(Employee, employee_id)
+        return (self._employee(db, row) if row else None, self._meta(state))
 
     def list_stores(self, **filters):
         with self._sessions() as db, db.begin():
-            state = self._state(db)
-            self._check_version(state, filters)
-            stmt = select(StoreProfile, Department).join(Department).where(StoreProfile.is_store.is_(True)).order_by(StoreProfile.department_id).limit(filters.get("limit", 100) + 1)
-            if not filters.get("include_inactive"):
-                stmt = stmt.where(Department.status == "active")
-            last_id = self._last_id(state, "stores", filters)
-            if last_id:
-                stmt = stmt.where(StoreProfile.department_id > last_id)
-            rows = list(db.execute(stmt))
-            page, next_cursor = self._page(rows, filters.get("limit", 100), key=lambda row: row[0].department_id)
-            return ([self._store(db, *row) for row in page], self._meta(state, self._next_cursor(state, "stores", filters, next_cursor)))
+            return self.list_stores_in_session(db, **filters)
+
+    def list_stores_in_session(self, db: Session, **filters):
+        state = self._state(db)
+        self._check_version(state, filters)
+        stmt = select(StoreProfile, Department).join(Department).where(StoreProfile.is_store.is_(True)).order_by(StoreProfile.department_id).limit(filters.get("limit", 100) + 1)
+        if not filters.get("include_inactive"):
+            stmt = stmt.where(Department.status == "active")
+        last_id = self._last_id(state, "stores", filters)
+        if last_id:
+            stmt = stmt.where(StoreProfile.department_id > last_id)
+        rows = list(db.execute(stmt))
+        page, next_cursor = self._page(rows, filters.get("limit", 100), key=lambda row: row[0].department_id)
+        return ([self._store(db, *row) for row in page], self._meta(state, self._next_cursor(state, "stores", filters, next_cursor)))
 
     def get_store(self, store_id: str):
         with self._sessions() as db, db.begin():
-            state = self._state(db)
-            row = db.execute(select(StoreProfile, Department).join(Department).where(StoreProfile.department_id == store_id)).one_or_none()
-            return (self._store(db, *row) if row else None, self._meta(state))
+            return self.get_store_in_session(db, store_id)
+
+    def get_store_in_session(self, db: Session, store_id: str):
+        state = self._state(db)
+        row = db.execute(select(StoreProfile, Department).join(Department).where(StoreProfile.department_id == store_id)).one_or_none()
+        return (self._store(db, *row) if row else None, self._meta(state))
 
     def list_store_employees(self, store_id: str, **filters):
         filters["store_id"] = store_id
@@ -120,6 +141,13 @@ class SqlReadService(ReadService):
             filters["primary_store_id"] = store_id
             filters.pop("store_id")
         return self.list_employees(**filters)
+
+    def list_store_employees_in_session(self, db: Session, store_id: str, **filters):
+        filters["store_id"] = store_id
+        if filters.pop("membership", "all") == "primary":
+            filters["primary_store_id"] = store_id
+            filters.pop("store_id")
+        return self.list_employees_in_session(db, **filters)
 
     @staticmethod
     def _check_version(state: DatasetState, filters: dict) -> None:

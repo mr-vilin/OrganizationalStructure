@@ -1,8 +1,8 @@
 """Immutable contracts shared by capability adapters and services."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from types import MappingProxyType
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, TypeVar, get_args
 
 ActorType = Literal["human_agent", "ci_agent"]
 Environment = Literal["production", "test"]
@@ -23,7 +23,8 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (datetime, date)): return value.isoformat()
     if isinstance(value, MappingProxyType) or isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (tuple, list, frozenset, set)): return [_jsonable(v) for v in value]
+    if isinstance(value, (frozenset, set)): return sorted((_jsonable(v) for v in value), key=repr)
+    if isinstance(value, (tuple, list)): return [_jsonable(v) for v in value]
     raise TypeError(f"value of type {type(value).__name__} is not JSON encodable")
 
 @dataclass(frozen=True)
@@ -53,8 +54,8 @@ class Observation:
     evidence: dict[str, Any]
 
     def __post_init__(self) -> None:
-        executions = ("request_recorded", "accepted", "running", "submitted", "verified", "partial", "failed", "unconfirmed")
-        qualities = ("resolved", "partial", "unknown", "inconsistent", "not_applicable")
+        executions = get_args(Execution)
+        qualities = get_args(FactQuality)
         if self.execution not in executions:
             raise ValueError(f"unknown execution: {self.execution}")
         if self.fact_quality not in qualities:
@@ -72,9 +73,10 @@ class CapabilityResult(Generic[T]):
     data: T
     observation: Observation
     audit: dict[str, Any]
+    write_operation: bool = field(default=True, kw_only=True, repr=False)
 
     def __post_init__(self) -> None:
-        if self.observation.execution in ("request_recorded", "accepted", "running", "submitted") and not self.operation_id:
+        if self.write_operation and self.observation.execution in ("request_recorded", "accepted", "running", "submitted") and not self.operation_id:
             raise ValueError("operation_id is required for write capability results")
         object.__setattr__(self, "data", _freeze(self.data))
         object.__setattr__(self, "audit", _freeze(self.audit))
