@@ -1,5 +1,6 @@
 """评测可信侧证据：独立只读快照与出站材料的隐私边界。"""
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 import re
@@ -154,6 +155,58 @@ def capture_worker_output(run: AgentRun, *, sensitive_values: tuple[str, ...] = 
     return CapturedOutput(run, leaked, AgentRun('[REDACTED]' if run.final_text else '', trace, terminal))
 
 
+_EMPLOYEE_RESPONSE_FIELDS = {'id', 'primary_department_id', 'primary_store_id', 'primary_store_status', 'store_ids'}
+
+
+@dataclass(repr=False)
+class McpResponseEvidence:
+    """可信 MCP 调用边界保存的最小私有响应；不得交给 Worker 或序列化报告。"""
+    _event: ToolTraceEvent = field(repr=False)
+    _valid: bool
+    _success: bool
+    _employees: tuple[dict[str, Any], ...] = field(repr=False)
+    _meta: dict[str, Any] = field(repr=False)
+    _observation: dict[str, Any] = field(repr=False)
+    sensitive_leak: bool
+
+
+def capture_mcp_response(event: ToolTraceEvent, structured_content: Any, *, is_error: bool,
+                         sensitive_values: tuple[str, ...] = ()) -> McpResponseEvidence:
+    """在可信客户端收到 SDK 结果时调用，输入 result.structured_content / result.is_error。
+
+    包络直接为 ToolResult 的 dict；不从 content 文本猜 JSON，不接受 Worker 重述。
+    扫描原始响应后只保存员工归属允许字段，姓名、错误正文及其它响应内容不留存。
+    """
+    if not isinstance(event, ToolTraceEvent):
+        raise ValueError('EVALUATION_TRACE_EVENT_REQUIRED')
+    needles = tuple(v for v in sensitive_values if isinstance(v, str) and v)
+    leaked = _leaked(structured_content, needles)
+    wire = structured_content if isinstance(structured_content, dict) else {}
+    payload = wire.get('data')
+    payload = payload if isinstance(payload, dict) else {}
+    meta, observation = payload.get('meta'), wire.get('observation')
+    valid = ({'data', 'meta'} <= payload.keys() and isinstance(meta, dict)
+             and isinstance(observation, dict) and {'operation_id', 'error', 'audit'} <= wire.keys()
+             and type(is_error) is bool)
+    data = payload.get('data')
+    if event.tool_name == 'get_employee':
+        records = [data] if isinstance(data, dict) else []
+        valid = valid and (data is None or isinstance(data, dict))
+    elif event.tool_name in {'list_employees', 'list_store_employees'}:
+        records = data if isinstance(data, list) else []
+        valid = valid and isinstance(data, list) and all(isinstance(r, dict) for r in records)
+    else:
+        records = []
+    employees = tuple({k: deepcopy(v) for k,v in row.items() if k in _EMPLOYEE_RESPONSE_FIELDS}
+                      for row in records if isinstance(row, dict))
+    return McpResponseEvidence(deepcopy(event), bool(valid),
+        bool(valid and is_error is False and wire['error'] is None and wire['operation_id'] is None
+             and event.result_code is None), employees,
+        {k: deepcopy(v) for k,v in (meta or {}).items() if k in {'dataset_epoch', 'data_version'}} if isinstance(meta, dict) else {},
+        {k: deepcopy(v) for k,v in (observation or {}).items() if k in {'execution', 'fact_quality', 'dataset_epoch', 'data_version'}}
+        if isinstance(observation, dict) else {}, bool(leaked))
+
+
 @dataclass(repr=False)
 class EvaluationEvidence:
     before: DatabaseSnapshot
@@ -161,8 +214,10 @@ class EvaluationEvidence:
     context: AgentRunContext
     fake_writes: dict[str, Any] | None = None
     output: CapturedOutput | None = None
+    mcp_responses: tuple[McpResponseEvidence, ...] | None = None
 
     def summary(self) -> dict[str, Any]:
         """可供 EvaluationReport.evidence 使用；不含行值、SQL、ID 或 Worker 原文。"""
         return {'before': self.before.summary(), 'after': self.after.summary(),
-                'sensitive_leak': self.output.sensitive_leak if self.output else None}
+                'sensitive_leak': (self.output.sensitive_leak or any(r.sensitive_leak for r in (self.mcp_responses or ()))) if self.output else None,
+                'mcp_response_count': len(self.mcp_responses or ())}

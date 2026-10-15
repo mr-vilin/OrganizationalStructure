@@ -137,6 +137,7 @@ def test_read_fixtures_have_explicit_seed_rows_and_literal_expectations(
         "employee_id": employee["id"], "primary_department_id": primary_department,
         "primary_store_id": primary_store, "primary_store_status": status,
         "store_ids": sorted(stores),
+        "read_completion": {"predicate": "employee_attribution"},
     }
     assert {tool for tool in case.allowed_tools} <= {"get_employee", "get_department", "list_stores", "get_store", "list_store_employees"}
     assert case.forbidden_effects == (

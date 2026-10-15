@@ -32,9 +32,10 @@ def evidence(c=None):
         tables[table] = deepcopy(c.fixture[section])
     tables['dataset_state'] = [deepcopy(c.fixture['dataset_state'])]
     snap = DatabaseSnapshot(tables)
-    return EvaluationEvidence(snap, DatabaseSnapshot(deepcopy(tables)),
+    obs = EvaluationEvidence(snap, DatabaseSnapshot(deepcopy(tables)),
         AgentRunContext('test-assertions', c.case_id, 'eval-actor', 'test'),
         fake_writes={'count': 0, 'by_method': {}}, output=capture_worker_output(AgentRun('', (), {})))
+    return attach_read_proofs(obs, [event(arguments={'employee_id': c.expected_state['employee_id']})], [read_wire(c)])
 
 
 def codes(failures):
@@ -318,6 +319,9 @@ def test_real_mysql_independent_readonly_consistent_snapshot_and_cleanup(name):
                 assert after.rows('dataset_state')[0]['data_version'] == 2
             obs = EvaluationEvidence(before, after, evidence(c).context,
                 {'count': 0, 'by_method': {}}, capture_worker_output(AgentRun('', (), {})))
+            wire = read_wire(c)
+            wire['data']['meta']['data_version'] = wire['observation']['data_version'] = 2
+            attach_read_proofs(obs, [event(arguments={'employee_id': c.expected_state['employee_id']})], [wire])
             assert assert_case_postconditions(c, obs) == []
             assert 'FORBIDDEN_EFFECT' in codes(assert_forbidden_effects(c, obs))
     engine = create_mysql_engine(url)
@@ -506,3 +510,210 @@ def test_status_enums_are_not_interchangeable_between_receipt_and_job(table, sta
     obs.after._tables[table][0]['status'] = status
     obs.output = capture_worker_output(replace(obs.output._run, terminal_observation={'execution': 'verified'}))
     assert 'TERMINAL_MISMATCH' in codes(assert_case_postconditions(c, obs))
+
+
+@pytest.mark.parametrize('name', ['PRIMARY_STORE', 'NOT_IN_STORE'])
+@pytest.mark.parametrize('variant', ['empty', 'unrelated', 'not_found'])
+def test_fix1_official_read_cases_require_successful_target_completion(name, variant):
+    c = case(name)
+    obs = evidence(c)
+    trace = () if variant == 'empty' else (event(arguments={
+        'employee_id': 'unrelated' if variant == 'unrelated' else c.expected_state['employee_id']},
+        code='NOT_FOUND' if variant == 'not_found' else None),)
+    obs.output = capture_worker_output(AgentRun('完成', trace, {}))
+    failures = (assert_case_postconditions(c, obs) + assert_forbidden_effects(c, obs)
+                + assert_trace_policy(c, trace))
+    assert 'MISSING_EVIDENCE' in codes(failures)
+
+
+def read_wire(c):
+    expected = c.expected_state
+    employee = {'id': expected['employee_id'], **{k: deepcopy(expected[k]) for k in (
+        'primary_department_id', 'primary_store_id', 'primary_store_status', 'store_ids')}}
+    version = {k: c.fixture['dataset_state'][k] for k in ('dataset_epoch', 'data_version')}
+    return {'operation_id': None, 'data': {'data': employee, 'meta': version},
+            'observation': {'execution': 'submitted', 'fact_quality': 'resolved', **version},
+            'audit': {}, 'error': None}
+
+
+def attach_read_proofs(obs, events, wires):
+    from app.evaluation.evidence import capture_mcp_response
+    obs.output = capture_worker_output(AgentRun('', tuple(events), {}))
+    obs.mcp_responses = tuple(capture_mcp_response(e, w, is_error=False) for e, w in zip(events, wires))
+    return obs
+
+
+@pytest.mark.parametrize('name', ['PRIMARY_STORE', 'NOT_IN_STORE'])
+@pytest.mark.parametrize('field,wrong', [('primary_department_id', 'wrong'), ('primary_store_id', 'wrong'),
+    ('primary_store_status', 'unknown'), ('store_ids', []), ('id', 'unrelated')])
+def test_fix1_correct_database_does_not_mask_wrong_mcp_target_data(name, field, wrong):
+    c = case(name)
+    wire = read_wire(c)
+    wire['data']['data'][field] = wrong
+    obs = attach_read_proofs(evidence(c), [event(arguments={'employee_id': c.expected_state['employee_id']})], [wire])
+    assert assert_case_postconditions(c, obs)
+
+
+@pytest.mark.parametrize('split_ownership', [False, True])
+def test_fix1_actual_audit_binds_owning_receipt_target_even_when_optional(split_ownership):
+    c, obs = operation_evidence()
+    before = obs.before.rows('store_profile')[0]
+    after = obs.after.rows('store_profile')[0]
+    after['is_store'] = False
+    log = obs.after.rows('change_log')[0]
+    log['before_data'] = {k: before[k] for k in ('is_store', 'store_code', 'notes')}
+    log['after_data'] = {k: after[k] for k in ('is_store', 'store_code', 'notes')}
+    first = replace(obs.output._run.trace[0], arguments={'changes': [{'department_id': 'store_river', 'is_store': False}]})
+    trace = [first]
+    if split_ownership:
+        other = deepcopy(obs.after.rows('operation_receipt')[0])
+        other['operation_id'] = 'op-other'
+        other['result_summary'] = {'audit_ids': []}
+        obs.after.rows('operation_receipt').append(other)
+        trace.append(replace(first, sequence=2, operation_id='op-other',
+            arguments={'changes': [{'department_id': 'store_people', 'is_store': False}]},
+            started_at='2026-10-15T00:00:02Z', finished_at='2026-10-15T00:00:03Z'))
+    obs.output = capture_worker_output(AgentRun('', tuple(trace), {}))
+    c = replace(c, expected_state={**c.expected_state, 'operation': {
+        **c.expected_state['operation'], 'count': 2 if split_ownership else 1, 'audit_required': False}})
+    assert 'AUDIT_MISSING' in codes(assert_case_postconditions(c, obs))
+
+
+@pytest.mark.parametrize('name', ['PRIMARY_STORE', 'NOT_IN_STORE'])
+@pytest.mark.parametrize('tool', ['get_employee', 'list_store_employees', 'list_employees'])
+def test_fix1_legitimate_complete_target_read_paths_pass_without_fixed_sequence(name, tool):
+    c = case(name)
+    if tool == 'list_employees':
+        c = replace(c, allowed_tools=(*c.allowed_tools, tool))
+    wire = read_wire(c)
+    if tool != 'get_employee':
+        wire['data']['data'] = [wire['data']['data']]
+    arguments = ({'employee_id': c.expected_state['employee_id']} if tool == 'get_employee' else
+                 {'store_id': c.expected_state['store_ids'][0]} if tool == 'list_store_employees' else {})
+    target = replace(event(tool, arguments=arguments, sequence=2),
+        started_at='2026-10-15T00:00:02Z', finished_at='2026-10-15T00:00:03Z')
+    # 前置无关合法读取不影响成功；只要求完成目标，不固定工具序列。
+    pre = event('get_department', arguments={'department_id': 'hq'})
+    obs = evidence(c)
+    from app.evaluation.evidence import capture_mcp_response
+    obs.output = capture_worker_output(AgentRun('', (pre, target), {}))
+    obs.mcp_responses = (capture_mcp_response(target, wire, is_error=False),)
+    assert assert_case_postconditions(c, obs) == []
+    assert assert_trace_policy(c, obs.output._run.trace) == []
+    assert assert_forbidden_effects(c, obs) == []
+
+
+@pytest.mark.parametrize('part,field', [('data', 'id'), ('data', 'primary_department_id'),
+    ('data', 'primary_store_id'), ('data', 'primary_store_status'), ('data', 'store_ids'),
+    ('meta', 'dataset_epoch'), ('meta', 'data_version'), ('observation', 'execution'),
+    ('observation', 'fact_quality'), ('observation', 'dataset_epoch'), ('observation', 'data_version')])
+def test_fix1_required_mcp_completion_fields_cannot_be_missing(part, field):
+    c = case()
+    wire = read_wire(c)
+    target = wire['observation'] if part == 'observation' else wire['data'][part]
+    del target[field]
+    obs = attach_read_proofs(evidence(c), [event(arguments={'employee_id': c.expected_state['employee_id']})], [wire])
+    assert 'MISSING_EVIDENCE' in codes(assert_case_postconditions(c, obs))
+
+
+@pytest.mark.parametrize('part,field,value', [('meta', 'data_version', 99), ('meta', 'dataset_epoch', 'test-other'),
+    ('observation', 'data_version', 99), ('observation', 'dataset_epoch', 'test-other')])
+def test_fix1_response_generation_and_version_match_independent_snapshot(part, field, value):
+    c = case()
+    wire = read_wire(c)
+    target = wire['observation'] if part == 'observation' else wire['data']['meta']
+    target[field] = value
+    obs = attach_read_proofs(evidence(c), [event(arguments={'employee_id': c.expected_state['employee_id']})], [wire])
+    assert 'VERSION_MISMATCH' in codes(assert_case_postconditions(c, obs))
+
+
+@pytest.mark.parametrize('variant', ['duplicate_target', 'unrelated_row', 'wrong_store', 'duplicate_store_ids'])
+def test_fix1_list_result_must_contain_unique_complete_target(variant):
+    c = case()
+    wire = read_wire(c)
+    row = wire['data']['data']
+    wire['data']['data'] = [row]
+    arguments = {'store_id': 'store_people'}
+    if variant == 'duplicate_target': wire['data']['data'].append(deepcopy(row))
+    if variant == 'unrelated_row': row['id'] = 'unrelated'
+    if variant == 'wrong_store': arguments['store_id'] = 'other_store'
+    if variant == 'duplicate_store_ids': row['store_ids'].append(row['store_ids'][0])
+    obs = attach_read_proofs(evidence(c), [event('list_store_employees', arguments=arguments)], [wire])
+    assert assert_case_postconditions(c, obs)
+
+
+@pytest.mark.parametrize('variant', ['sdk_error', 'tool_error', 'missing_error', 'missing_body', 'response_none',
+    'trace_failure', 'target_none', 'unconfirmed', 'unknown_quality', 'no_proof', 'event_mismatch', 'duplicate_proof'])
+def test_fix1_trusted_response_binding_and_success_are_required(variant):
+    from app.evaluation.evidence import capture_mcp_response
+    c = case()
+    wire = read_wire(c)
+    target = event(arguments={'employee_id': c.expected_state['employee_id']})
+    if variant == 'tool_error': wire['error'] = {'code': 'NOT_FOUND'}
+    if variant == 'missing_error': del wire['error']
+    if variant == 'missing_body': del wire['data']['data']
+    if variant == 'response_none': wire = None
+    if variant == 'target_none': wire['data']['data'] = None
+    if variant == 'trace_failure': target = replace(target, result_code='NOT_FOUND')
+    if variant == 'unconfirmed': wire['observation']['execution'] = 'unconfirmed'
+    if variant == 'unknown_quality': wire['observation']['fact_quality'] = 'unknown'
+    obs = evidence(c)
+    obs.output = capture_worker_output(AgentRun('', (target,), {}))
+    proof = capture_mcp_response(target, wire, is_error=variant == 'sdk_error')
+    obs.mcp_responses = (proof,)
+    if variant == 'no_proof': obs.mcp_responses = None
+    if variant == 'event_mismatch':
+        obs.output = capture_worker_output(AgentRun('', (replace(target, arguments={'employee_id': 'other'}),), {}))
+    if variant == 'duplicate_proof': obs.mcp_responses = (proof, proof)
+    assert assert_case_postconditions(c, obs)
+
+
+def test_fix1_mcp_response_scanned_before_allowlist_and_public_summary_contains_no_body():
+    c = case()
+    wire = read_wire(c)
+    wire['data']['data']['name'] = 'synthetic-private-person'
+    wire['data']['data']['access_token'] = 'synthetic-response-secret'
+    obs = attach_read_proofs(evidence(c), [event(arguments={'employee_id': c.expected_state['employee_id']})], [wire])
+    assert 'SENSITIVE_LEAK' in codes(assert_case_postconditions(c, obs))
+    assert 'name' not in obs.mcp_responses[0]._employees[0]
+    assert 'access_token' not in obs.mcp_responses[0]._employees[0]
+    assert 'synthetic-response-secret' not in repr(obs.summary())
+    assert 'synthetic-private-person' not in repr(obs.mcp_responses)
+    assert obs.summary()['sensitive_leak'] is True
+
+
+def test_fix1_mcp_response_capture_is_a_detached_snapshot():
+    c = case()
+    wire = read_wire(c)
+    obs = attach_read_proofs(evidence(c), [event(arguments={'employee_id': c.expected_state['employee_id']})], [wire])
+    wire['data']['data']['store_ids'].clear()
+    assert assert_case_postconditions(c, obs) == []
+
+
+def test_fix1_audit_cannot_have_two_owning_receipts():
+    c, obs = operation_evidence()
+    before, after = obs.before.rows('store_profile')[0], obs.after.rows('store_profile')[0]
+    after['is_store'] = False
+    log = obs.after.rows('change_log')[0]
+    log['before_data'] = {k: before[k] for k in ('is_store', 'store_code', 'notes')}
+    log['after_data'] = {k: after[k] for k in ('is_store', 'store_code', 'notes')}
+    second = deepcopy(obs.after.rows('operation_receipt')[0])
+    second['operation_id'] = 'op-second'
+    obs.after.rows('operation_receipt').append(second)
+    first = obs.output._run.trace[0]
+    trace = (first, replace(first, sequence=2, operation_id='op-second',
+        started_at='2026-10-15T00:00:02Z', finished_at='2026-10-15T00:00:03Z'))
+    obs.output = capture_worker_output(AgentRun('', trace, {}))
+    c = replace(c, expected_state={**c.expected_state, 'operation': {
+        **c.expected_state['operation'], 'count': 2, 'audit_required': False}})
+    assert 'AUDIT_MISSING' in codes(assert_case_postconditions(c, obs))
+
+
+def test_fix1_existing_audit_target_is_checked_even_when_final_state_has_no_net_change():
+    c, obs = operation_evidence()
+    trace = (replace(obs.output._run.trace[0], arguments={
+        'changes': [{'department_id': 'store_river', 'is_store': False}]}),)
+    obs.output = capture_worker_output(AgentRun('', trace, {}))
+    c = replace(c, expected_state={**c.expected_state, 'operation': {
+        **c.expected_state['operation'], 'audit_required': False}})
+    assert 'AUDIT_MISSING' in codes(assert_case_postconditions(c, obs))

@@ -3,7 +3,7 @@ from datetime import datetime
 import json
 
 from app.evaluation.evidence import (
-    BUSINESS_TABLES, EvaluationEvidence, DatabaseSnapshot, CapturedOutput,
+    BUSINESS_TABLES, EvaluationEvidence, DatabaseSnapshot, CapturedOutput, McpResponseEvidence,
     capture_worker_output,
 )
 from app.evaluation.models import AgentRun, ToolTraceEvent
@@ -33,7 +33,7 @@ class AssertionFailure(Exception):
 
 
 _READ = {'employee_id', 'primary_department_id', 'primary_store_id', 'primary_store_status', 'store_ids'}
-_EXPECTED = _READ | {'dataset_epoch', 'data_version', 'version_delta', 'rows', 'operation', 'execution', 'fact_quality'}
+_EXPECTED = _READ | {'dataset_epoch', 'data_version', 'version_delta', 'rows', 'operation', 'execution', 'fact_quality', 'read_completion'}
 _FORBIDDEN = {'business_tables_unchanged', 'data_version_unchanged', 'no_new_operation_receipts',
               'no_new_sync_jobs', 'no_new_change_logs', 'no_feishu_writes', 'pending_protected'}
 _LABELS = _EXPECTED | _FORBIDDEN | {'evidence', 'trace', 'privacy', 'identity', 'terminal', 'unsupported'}
@@ -153,6 +153,59 @@ def _read_condition(key, value, expected, obs):
               and set(actual) == set(value), 'FACT_MISMATCH', key)
 
 
+def _read_completion(value, expected, obs, case):
+    _need(value == {'predicate': 'employee_attribution'}, 'INVALID_PREDICATE', 'read_completion')
+    _need(_READ <= expected.keys(), 'INVALID_PREDICATE', 'read_completion')
+    _need(isinstance(obs.mcp_responses, tuple) and bool(obs.mcp_responses), label='read_completion')
+    _need(isinstance(obs.output, CapturedOutput), label='read_completion')
+    trace = obs.output._run.trace
+    target = expected['employee_id']
+    matched = []
+    seen = set()
+    for response in obs.mcp_responses:
+        _need(isinstance(response, McpResponseEvidence), label='read_completion')
+        event = response._event
+        # 证据必须逐次绑定可信 trace；重复 sequence 不可用于拼装成功。
+        _need(sum(e == event for e in trace) == 1 and event.sequence not in seen, label='read_completion')
+        seen.add(event.sequence)
+        if event.tool_name not in case.allowed_tools:
+            continue
+        direct = event.tool_name == 'get_employee' and event.arguments.get('employee_id') == target
+        listed = event.tool_name in {'list_employees', 'list_store_employees'}
+        rows = [r for r in response._employees if r.get('id') == target]
+        if not (direct or listed and rows) or not response._success:
+            continue
+        _need(response._valid and len(rows) == 1, label='read_completion')
+        row = rows[0]
+        _need({'id', 'primary_department_id', 'primary_store_id', 'primary_store_status', 'store_ids'} <= row.keys(),
+              label='read_completion')
+        if event.tool_name == 'list_store_employees':
+            store = event.arguments.get('store_id')
+            _need(store in expected['store_ids'] and event.arguments.get('membership', 'all') in {'all', 'primary'},
+                  'FACT_MISMATCH', 'read_completion')
+            if event.arguments.get('membership') == 'primary':
+                _need(store == expected['primary_store_id'], 'FACT_MISMATCH', 'read_completion')
+        for key in ('primary_department_id', 'primary_store_id', 'primary_store_status'):
+            _need(_same(row[key], expected[key]), 'FACT_MISMATCH', 'read_completion')
+        stores = row['store_ids']
+        _need(isinstance(stores, list) and all(type(item) is str for item in stores), label='read_completion')
+        _need(len(stores) == len(set(stores)) and set(stores) == set(expected['store_ids']),
+              'FACT_MISMATCH', 'read_completion')
+        for version_key, actual in zip(('dataset_epoch', 'data_version'), _version(obs.after)):
+            for part in (response._meta, response._observation):
+                _need(version_key in part, label='read_completion')
+                _need(_same(part[version_key], actual), 'VERSION_MISMATCH', 'read_completion')
+        _need({'execution', 'fact_quality'} <= response._observation.keys(), label='read_completion')
+        _need(response._observation['execution'] in {'submitted', 'verified'}
+              and response._observation['fact_quality'] == _terminal(obs)[1],
+              'TERMINAL_MISMATCH', 'read_completion')
+        # 固定预期同时再比独立DB，不能因API与一个错误预期相同而跳过真实事实。
+        for key in _READ:
+            _read_condition(key, expected[key], expected, obs)
+        matched.append(response)
+    _need(bool(matched), label='read_completion')
+
+
 def _row_conditions(value, obs):
     _need(isinstance(value, list) and bool(value), 'INVALID_PREDICATE', 'rows')
     for rule in value:
@@ -259,22 +312,37 @@ def _audit_store_changes(obs):
     apply_receipts = [r for r in receipts if _field(r, 'capability') == 'apply_store_changes']
     if not apply_receipts:
         return
-    linked = set()
+    owners = {}
     for receipt in apply_receipts:
         summary = _field(receipt, 'result_summary')
         if isinstance(summary, dict) and isinstance(summary.get('audit_ids'), list):
-            linked.update(str(value) for value in summary['audit_ids'])
+            for audit_id in summary['audit_ids']:
+                owners.setdefault(str(audit_id), []).append(receipt)
+    store_logs = [r for r in _new(obs, 'change_log') if _field(r, 'object_type') == 'store']
+    for log in store_logs:
+        identifier = _field(log, 'object_id')
+        owning = owners.get(str(_field(log, 'id')), [])
+        _need(len(owning) == 1, 'AUDIT_MISSING', 'operation')
+        owner = owning[0]
+        requests = [e for e in obs.output._run.trace if e.operation_id == owner['operation_id']
+                    and e.tool_name == 'apply_store_changes' and e.result_code is None]
+        _need(bool(requests), 'AUDIT_MISSING', 'operation')
+        for request in requests:
+            changes = request.arguments.get('changes')
+            _need(isinstance(changes, list) and any(isinstance(c, dict) and c.get('department_id') == identifier
+                                                   for c in changes), 'AUDIT_MISSING', 'operation')
+        _need(_field(log, 'actor') == obs.context.actor_id and _field(log, 'source') == 'admin',
+              'AUDIT_MISSING', 'operation')
     for identifier in before.keys() | after.keys():
         if _same(before.get(identifier), after.get(identifier)):
             continue
-        logs = [r for r in _new(obs, 'change_log') if _field(r, 'object_type') == 'store'
-                and _field(r, 'object_id') == identifier]
+        logs = [r for r in store_logs if _field(r, 'object_id') == identifier]
         _need(bool(logs) and identifier in after, 'AUDIT_MISSING', 'operation')
         fields = ('is_store', 'store_code', 'notes')
         previous = {k: _field(before[identifier], k) for k in fields} if identifier in before else {
             'is_store': False, 'store_code': None, 'notes': None}
         for log in sorted(logs, key=lambda r: _field(r, 'id')):
-            _need(str(_field(log, 'id')) in linked and _field(log, 'actor') == obs.context.actor_id
+            _need(_field(log, 'actor') == obs.context.actor_id
                   and _field(log, 'source') == 'admin' and _same(_field(log, 'before_data'), previous),
                   'AUDIT_MISSING', 'operation')
             previous = _field(log, 'after_data')
@@ -331,6 +399,9 @@ def _terminal(obs):
 def _check_claim(obs):
     _need(isinstance(obs.output, CapturedOutput))
     _need(not obs.output.sensitive_leak, 'SENSITIVE_LEAK', 'privacy')
+    for response in obs.mcp_responses or ():
+        _need(isinstance(response, McpResponseEvidence))
+        _need(not response.sensitive_leak, 'SENSITIVE_LEAK', 'privacy')
     claimed = obs.output._run.terminal_observation
     _need(isinstance(claimed, dict), 'TERMINAL_MISMATCH', 'terminal')
     actual = dict(zip(('execution', 'fact_quality'), _terminal(obs)))
@@ -363,6 +434,8 @@ def assert_case_postconditions(case, observation) -> list[AssertionFailure]:
             _row_conditions(value, obs)
         elif key == 'operation':
             _operation(value, obs)
+        elif key == 'read_completion':
+            _read_completion(value, expected, obs, case)
         elif key in {'execution', 'fact_quality'}:
             actual = _terminal(obs)[0 if key == 'execution' else 1]
             _need(actual == value, 'TERMINAL_MISMATCH', key)

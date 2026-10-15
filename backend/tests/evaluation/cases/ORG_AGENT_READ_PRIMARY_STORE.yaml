@@ -36,6 +36,7 @@ fixture:
     responses: []
 allowed_tools: [get_employee, get_department, list_stores, get_store, list_store_employees]
 expected_state:
+  read_completion: {predicate: employee_attribution}
   employee_id: eval_employee_primary
   primary_department_id: people_service
   primary_store_id: store_people
