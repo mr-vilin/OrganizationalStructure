@@ -13,10 +13,13 @@ from .dependencies import Runtime, get_admin_identity, get_public_identity, get_
 from .persistence.database import database_ready
 from .services import ReadService
 from .admin.router import router as admin_router
+from .capabilities.router import router as capability_router
+from .capabilities.errors import CapabilityError
 
 
 app = FastAPI(title="组织架构维护系统", version="1.0.0")
 app.include_router(admin_router)
+app.include_router(capability_router)
 log = logging.getLogger("organization.api")
 
 
@@ -25,6 +28,11 @@ def error(code: str, message: str, status: int, *, fields: list | None = None) -
     if fields:
         body["error"]["fields"] = fields
     return JSONResponse(body, status_code=status)
+
+
+@app.exception_handler(CapabilityError)
+async def capability_error_handler(request: Request, exc: CapabilityError):
+    return JSONResponse(exc.to_dict(), status_code=exc.status)
 
 
 @app.exception_handler(StarletteHTTPException)

@@ -1,6 +1,6 @@
 # 后端 API 契约
 
-本契约供管理前端、飞书适配器和只读下游共同使用。所有成功响应使用 `{"data": ..., "meta": ...}`，失败响应使用 `{"error":{"code":"...","message":"..."}}`。日期时间均为 UTC ISO 8601；来源 ID 区分大小写。
+本契约供管理前端、飞书适配器和只读下游共同使用。公共 API 和管理 API 的成功响应使用 `{"data": ..., "meta": ...}`，失败响应使用 `{"error":{"code":"...","message":"..."}}`。日期时间均为 UTC ISO 8601；来源 ID 区分大小写。
 
 ## 鉴权
 
@@ -121,3 +121,52 @@ worker 通过 `SqlSyncJobRepository.claim_next()` 认领任务；全局租约、
 | 500 | `DATABASE_ERROR` | 其他数据库操作异常；统一 JSON 响应 |
 
 框架未知路由 404、方法不允许 405 同样返回 `error` JSON envelope。生产 SQLAlchemy engine 启用 `hide_parameters=True`；数据库异常处理器不输出异常原文、SQL 参数或连接信息。
+
+
+## 内部 Agent 能力边界
+
+`/internal/capabilities/**` 仅供可信 MCP sidecar 使用，不属于下游公共 API 契约。部署必须实施网络隔离，反向代理不得向公网或普通客户端公开 `/internal` 路径。服务令牌只授予可信 sidecar；持有令牌的服务可以声明主体与确认状态，应承担用户确认和身份核验责任。
+
+配置 `ORG_AGENT_SERVICE_TOKEN` 为独立高熵服务令牌，`ORG_AGENT_ENVIRONMENT` 为 `production`（默认）或 `test`。未配置、空值或纯空白令牌均保持禁用。禁止记录 Authorization、服务令牌或飞书/数据库凭据原文。内部服务令牌、原只读 API 凭据与管理员 Cookie 互不替代。
+
+每次请求必须携带以下可信请求头，sidecar 必须覆盖调用方提供的同名头，不能透传模型生成的身份声明：
+
+| 请求头 | 约定 |
+| --- | --- |
+| `Authorization` | `Bearer <service token>`，使用专用服务令牌 |
+| `X-Agent-Actor-Type` | `human_agent` 或 `ci_agent` |
+| `X-Agent-Actor-Id` | 非空稳定主体 ID，最长 191 字符，不允许空白或控制字符 |
+| `X-Agent-Environment` | 必须等于服务端配置的 `production` 或 `test` |
+| `X-Agent-Run-Id` / `X-Agent-Case-Id` | 可选，提供时遵循主体 ID 字符规则 |
+| `X-Agent-Approved` | 可选，只接受小写 `true` / `false`，默认 `false` |
+
+以上头不得重复。缺/错/空 token、非法主体头或环境不匹配统一返回 `401 AGENT_SERVICE_UNAUTHORIZED`，身份校验通过前不构造业务 Runtime、不读取业务数据。可信身份有效但 Runtime 未配置时返回 `503 DATABASE_NOT_CONFIGURED`。body 中的 `actor`、`actor_id`、`environment`、`approved`、`token`、`approval_token` 等额外身份字段被忽略，不参与授权。
+
+生产 L2 写入（门店 apply、同步请求与重试）必须有可信 `X-Agent-Approved: true`，否则返回 `409 CONFIRMATION_REQUIRED`。L0/L1 查询和 preview 不要求确认。`ci_agent` 禁止访问 production；test 环境还要求以 `test-` 或 `test_` 开头的非空 run_id，并由能力门面核验实际测试数据库。
+
+所有成功响应为能力结果的四字段对象：`{operation_id,data,observation,audit}`。组织读取、preview 和日志的 `data` 内部仍为 `{data,meta}`；同步/写入和回执查询返回安全回执状态、capability、job_id、提交世代/版本及摘要。`observation` 保留执行状态、事实质量与证据，不把请求已接受解释成已验证。失败仍为稳定 `error` envelope；歧义目标附安全 `candidates`。时间为明确 UTC ISO 8601。
+
+以下路径均相对于 `/internal/capabilities`：
+
+| 方法 | 路径 | 参数与行为 |
+| --- | --- | --- |
+| GET | `/status` | 数据与观察状态 |
+| GET | `/departments` | `department_id`、`name`、`path`（名称路径以 `/` 分隔）至多一种定位条件；无定位条件为分页列表。另支持公共部门列表的筛选和分页版本参数 |
+| GET | `/departments/{department_id}` | 按稳定 ID 读取 |
+| GET | `/employees` / `/employees/{employee_id}` | 列表支持与公共员工列表相同的筛选及分页版本参数 |
+| GET | `/stores` / `/stores/{store_id}` | 列表支持 `include_inactive` 及分页版本参数 |
+| GET | `/stores/{store_id}/employees` | `membership=all\|primary`、`include_inactive` 及分页版本参数 |
+| GET | `/change-logs` | `object_type/object_id/source/job_id/actor/action/committed_after/committed_before/limit/cursor/dataset_epoch/data_version`；仅安全业务审计，时间范围必须带时区 |
+| GET | `/sync/jobs/{job_id}` | 安全任务状态/明细，只附当前主体作用域的 operation_ids，不返回上游错误原文 |
+| POST | `/stores/batch/preview` | `{changes:[...],expected_version:7}`；只预览 |
+| POST | `/stores/batch/apply` | `{changes:[...],expected_epoch:"...",expected_version:7,idempotency_key:"..."}`；世代和版本都必填且同时匹配才能写入 |
+| POST | `/sync/jobs` | `{job_type:"initialize\|full\|reconcile\|subtree",root_department_id:null,idempotency_key:"..."}`，返回 202；subtree 必须指定有效根，其他类型不带根 |
+| POST | `/sync/jobs/{job_id}/retry` | `{idempotency_key:"..."}`，返回 202；仅可重试失败任务 |
+| GET | `/operations/lookup?idempotency_key=...` | 丢失写响应时按当前主体/环境查询原回执；静态 lookup 优先于动态 ID 路由 |
+| GET | `/operations/{operation_id}` | 按 ID 查询当前主体/环境的原回执；无权读取的回执与不存在回执均为 `404 OPERATION_NOT_FOUND` |
+
+分页版本参数为 `limit/cursor/dataset_epoch/data_version`；日志 cursor 是绑定世代、版本与实际筛选的不透明字符串。跨页显式传回首页的世代与版本；旧整数游标或筛选变化返回 `400 INVALID_CURSOR`，版本/世代变化返回 `409 DATASET_CHANGED`。部门精确定位不支持 cursor；目标歧义返回 `409 AMBIGUOUS_TARGET`，不会自动选择候选。
+
+门店 changes 为 `[{department_id,is_store,store_code?,notes?}]`，其中 `is_store` 必须为 JSON 布尔值。省略编码/备注保留原值，显式 null 清空；保留门店业务规则。apply 的 expected_version 必须为非负 JSON 整数，expected_epoch 必须非空，idempotency_key 为非空且最长 191 字符。相同主体/环境/幂等键及相同请求重放原回执，不再次写入；相同键但请求不同返回 `409 OPERATION_CONFLICT`。历史世代重放仍保留原提交证据，观察会说明当前世代差异。
+
+写请求超时或响应丢失时，先以相同身份通过 operation_id 或原 idempotency_key 观察回执，再依据证据决定后续动作。不要生成新幂等键盲目重发写请求。现有普通管理 API 的请求与响应格式保持原约定。
