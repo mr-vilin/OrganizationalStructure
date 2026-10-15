@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.persistence.models import WorkerLease, SyncJob, EventInbox, SystemSetting, DatasetState, Department, Employee, EmployeeDepartment, PendingFact, ChangeLog, SyncStaging
 from app.sync.collector import Candidate
 from app.persistence.repositories import SqlSyncJobRepository
+from app.capabilities.receipts import ReceiptRepository
 from app.sync.publisher import Publisher
 from app.sync.settings import ScheduleService
 
@@ -187,6 +188,8 @@ class Worker:
         with self.sessions.begin() as db:
             lease = db.scalar(select(WorkerLease).where(WorkerLease.id == 1).with_for_update())
             if lease.owner != self.owner or lease.generation != self.generation or lease.expires_at <= now: return
+            # 与 Publisher 一致：WorkerLease → DatasetState → job → receipt。
+            self.jobs._lock_dataset(db)
             row = db.scalar(select(SyncJob).where(SyncJob.id == claimed.id).with_for_update())
             if row.status != 'running' or row.lease_generation != claimed.lease_generation: return
             row.error_code = str(exc) if str(exc) in SAFE_SYNC_ERRORS else 'SYNC_FAILED'
@@ -198,6 +201,9 @@ class Worker:
             row.lease_expires_at = now+timedelta(seconds=min(900, 15 * 2 ** row.attempt)) if row.status == 'queued' else None
             row.attempt += 1 if row.status == 'queued' else 0
             db.add(ChangeLog(object_type='sync_job', object_id=row.id, source='worker', actor=self.owner, job_id=row.id, before_data={'status': 'running'}, after_data={'status': row.status, 'error_code': row.error_code, 'attempt': row.attempt}, committed_at=now))
+            if row.status == 'failed':
+                row.finished_at = now
+                ReceiptRepository().finalize_job_in_session(db, row, now)
 
 
 def main():

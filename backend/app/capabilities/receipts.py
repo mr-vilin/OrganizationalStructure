@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .contracts import AgentContext
 from .errors import OperationConflict, OperationNotFound
-from app.persistence.models import DatasetState, OperationReceipt
+from app.persistence.models import ChangeLog, DatasetState, OperationReceipt, SyncJob
 
 
 _SENSITIVE = ('token', 'secret', 'password', 'credential', 'authorization', 'api_key')
@@ -149,3 +149,40 @@ class ReceiptRepository:
         return self._update(db, row, 'failed', {
             'error_code': error_code, 'result_summary': _sanitize(summary or {}),
         }, now)
+
+    def finalize_job_in_session(self, db: Session, job: SyncJob, now: datetime, *, changed_count: int | None = None, allow_initial_epoch_transition: bool = False) -> None:
+        """调用方已按 DatasetState → job 顺序锁定任务；只收束 accepted 回执。"""
+        if job.status not in {'succeeded', 'failed'}:
+            raise OperationConflict()
+        db.flush()
+        state = self._lock_state(db)
+        rows = list(db.scalars(select(OperationReceipt).where(
+            OperationReceipt.job_id == job.id, OperationReceipt.status == 'accepted',
+        ).order_by(OperationReceipt.operation_id).with_for_update().execution_options(populate_existing=True)))
+        summary = {'job_id': job.id, 'status': job.status,
+                   'success_count': job.success_count, 'failure_count': job.failure_count}
+        if changed_count is not None:
+            summary['changed_count'] = changed_count
+        audit_ids = list(db.scalars(select(ChangeLog.id).where(ChangeLog.job_id == job.id).order_by(ChangeLog.id)))
+        for row in rows:
+            same_epoch = row.before_epoch == row.committed_epoch == state.dataset_epoch
+            first_epoch = (allow_initial_epoch_transition and state.dataset_epoch != 'pending'
+                           and row.before_epoch == row.committed_epoch == 'pending')
+            if not (same_epoch or first_epoch):
+                self._update(db, row, 'failed', {
+                    'error_code': 'DATASET_CHANGED', 'result_summary': _sanitize({'job_id': job.id}),
+                }, now)
+                continue
+            if job.status == 'failed':
+                code = job.error_code
+                if not isinstance(code, str) or not _ERROR_CODE.fullmatch(code):
+                    code = 'SYNC_FAILED'
+                self._update(db, row, 'failed', {
+                    'error_code': code, 'result_summary': _sanitize(summary),
+                }, now)
+                continue
+            self._update(db, row, 'submitted', {
+                'committed_epoch': state.dataset_epoch, 'committed_version': state.data_version,
+                'result_summary': {**_sanitize(summary), 'audit_ids': _audit_ids(audit_ids)},
+                'error_code': None,
+            }, now)

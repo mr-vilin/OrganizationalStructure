@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import delete, func, select
@@ -11,51 +12,71 @@ from app.persistence.models import ChangeLog, DatasetState, Department, Employee
 from .domain import InvalidStoreChanges, StorePatch, StoreValidationError, merge_store_patch, validate_store_changes
 
 
+@dataclass(frozen=True)
+class StoreApplyResult:
+    """供事务调用方直接关联本次写入的版本与完整审计标识。"""
+    dataset_epoch: str
+    data_version: int
+    changed_count: int
+    audit_ids: tuple[int, ...]
+
+
 class StoreAdminService:
     def __init__(self, sessions: sessionmaker[Session]):
         self._sessions = sessions
 
     def preview(self, changes: list[StorePatch], expected_version: int) -> dict:
         with self._sessions() as db, db.begin():
-            state = self._lock_state(db, expected_version, lock=False)
-            normalized = self._validate(db, changes)
-            before_projection = self._projection(db)
-            after_projection = self._projection(db, {c.department_id: c.is_store for c in normalized})
-            affected = sum(before_projection[key] != value for key, value in after_projection.items())
-            concrete = []
-            for change in normalized:
-                after = merge_store_patch(self._snapshot(db.get(StoreProfile, change.department_id)), change)
-                concrete.append({"department_id": change.department_id, **after})
-            return {"data_version": state.data_version, "changes": concrete, "affected_employee_count": affected}
+            return self.preview_in_session(db, changes, expected_version)
+
+    def preview_in_session(self, db: Session, changes: list[StorePatch], expected_version: int) -> dict:
+        state = self._lock_state(db, expected_version, lock=False)
+        normalized = self._validate(db, changes)
+        before_projection = self._projection(db)
+        after_projection = self._projection(db, {c.department_id: c.is_store for c in normalized})
+        affected = sum(before_projection[key] != value for key, value in after_projection.items())
+        concrete = []
+        for change in normalized:
+            after = merge_store_patch(self._snapshot(db.get(StoreProfile, change.department_id, populate_existing=True)), change)
+            concrete.append({"department_id": change.department_id, **after})
+        return {"data_version": state.data_version, "changes": concrete, "affected_employee_count": affected}
 
     def apply(self, changes: list[StorePatch], expected_version: int, actor: str, now: datetime) -> dict:
         with self._sessions.begin() as db:
-            state = self._lock_state(db, expected_version, lock=True)
-            normalized = self._validate(db, changes)
-            business_changes = 0
-            for change in normalized:
-                current = db.get(StoreProfile, change.department_id)
-                before = self._snapshot(current)
-                after = merge_store_patch(before, change)
-                if before == after:
-                    continue
-                if after["store_code"]:
-                    reservation = db.get(StoreCodeReservation, after["store_code"])
-                    if reservation and reservation.department_id != change.department_id:
-                        raise InvalidStoreChanges([StoreValidationError(change.department_id, "STORE_CODE_RESERVED", "门店编码已由其他部门保留")])
-                    if reservation is None:
-                        db.add(StoreCodeReservation(store_code=after["store_code"], department_id=change.department_id, reserved_at=now))
-                if current is None:
-                    current = StoreProfile(department_id=change.department_id)
-                    db.add(current)
-                current.is_store, current.store_code, current.notes = after["is_store"], after["store_code"], after["notes"]
-                db.add(ChangeLog(object_type="store", object_id=change.department_id, source="admin", actor=actor, before_data=before, after_data=after, committed_at=now))
-                business_changes += 1
-            if business_changes:
-                db.flush()
-                self._rebuild_projection(db)
-                state.data_version += 1
-            return {"data_version": state.data_version, "changed_count": business_changes}
+            result = self.apply_in_session(db, changes, expected_version, actor, now)
+            return {"data_version": result.data_version, "changed_count": result.changed_count}
+
+    def apply_in_session(self, db: Session, changes: list[StorePatch], expected_version: int, actor: str, now: datetime) -> StoreApplyResult:
+        state = self._lock_state(db, expected_version, lock=True)
+        normalized = self._validate(db, changes)
+        audit_rows = []
+        business_changes = 0
+        for change in normalized:
+            current = db.get(StoreProfile, change.department_id, populate_existing=True)
+            before = self._snapshot(current)
+            after = merge_store_patch(before, change)
+            if before == after:
+                continue
+            if after["store_code"]:
+                reservation = db.get(StoreCodeReservation, after["store_code"])
+                if reservation and reservation.department_id != change.department_id:
+                    raise InvalidStoreChanges([StoreValidationError(change.department_id, "STORE_CODE_RESERVED", "门店编码已由其他部门保留")])
+                if reservation is None:
+                    db.add(StoreCodeReservation(store_code=after["store_code"], department_id=change.department_id, reserved_at=now))
+            if current is None:
+                current = StoreProfile(department_id=change.department_id)
+                db.add(current)
+            current.is_store, current.store_code, current.notes = after["is_store"], after["store_code"], after["notes"]
+            audit = ChangeLog(object_type="store", object_id=change.department_id, source="admin", actor=actor, before_data=before, after_data=after, committed_at=now)
+            db.add(audit)
+            audit_rows.append(audit)
+            business_changes += 1
+        if business_changes:
+            db.flush()
+            self._rebuild_projection(db)
+            state.data_version += 1
+        db.flush()
+        return StoreApplyResult(state.dataset_epoch, state.data_version, business_changes, tuple(row.id for row in audit_rows))
 
     def _validate(self, db: Session, changes: list[StorePatch]) -> list[StorePatch]:
         ids = [change.department_id for change in changes]
@@ -63,7 +84,7 @@ class StoreAdminService:
         normalized = validate_store_changes(changes, departments=departments)
         errors = []
         for change in normalized:
-            current = self._snapshot(db.get(StoreProfile, change.department_id))
+            current = self._snapshot(db.get(StoreProfile, change.department_id, populate_existing=True))
             code = merge_store_patch(current, change)["store_code"]
             reservation = db.get(StoreCodeReservation, code) if code else None
             if reservation is not None and reservation.department_id != change.department_id:
@@ -75,7 +96,7 @@ class StoreAdminService:
     @staticmethod
     def _lock_state(db: Session, expected_version: int, lock: bool) -> DatasetState:
         stmt = select(DatasetState).where(DatasetState.id == 1)
-        state = db.scalar(stmt.with_for_update() if lock else stmt)
+        state = db.scalar((stmt.with_for_update() if lock else stmt).execution_options(populate_existing=True))
         if state is None:
             raise RuntimeError("INITIALIZATION_INCOMPLETE")
         if state.data_version != expected_version:
