@@ -1,10 +1,11 @@
 """独立 MCP wire 模型；不依赖业务包或数据库。"""
 from collections.abc import Iterable
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 import re
 import unicodedata
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field,
+                      StrictBool, StrictInt, field_validator, model_validator)
 
 
 class AgentPrincipal(BaseModel):
@@ -79,3 +80,37 @@ class ToolResult(BaseModel):
                 fields=[{"field": name} for name in field_names if isinstance(name, str) and _FIELD_NAME.fullmatch(name)],
             ),
         )
+
+# 独立 HTTP wire 类型：约束只覆盖边界，业务规则仍由内部能力服务判定。
+
+
+def _route_id(value: str) -> str:
+    if value in (".", "..") or any(c in value for c in "/\\?#%") or any(ord(c) < 32 for c in value):
+        raise ValueError("Invalid route identifier.")
+    return value
+
+
+Identifier = Annotated[str, Field(strict=True, min_length=1, max_length=191), AfterValidator(_route_id)]
+Key = Annotated[str, Field(strict=True, min_length=1, max_length=191)]
+Version = Annotated[StrictInt, Field(ge=0)]
+PageLimit = Annotated[StrictInt, Field(ge=1, le=500)]
+FindLimit = Annotated[StrictInt, Field(ge=1, le=100)]
+Cursor = Annotated[str, Field(strict=True, min_length=1)]
+Name = Annotated[str, Field(strict=True, min_length=1, max_length=255)]
+QueryText = Annotated[str, Field(strict=True, min_length=1)]
+
+
+class StoreChange(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+    department_id: Identifier
+    is_store: StrictBool
+    store_code: Annotated[str, Field(max_length=128)] | None = None
+    notes: str | None = None
+
+
+Changes = Annotated[list[StoreChange], Field(min_length=1, max_length=500)]
+
+
+class Confirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+    confirmed: StrictBool

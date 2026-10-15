@@ -342,3 +342,57 @@ def test_chinese_identity_round_trips_through_real_internal_asgi_dependency(envi
         run(scenario())
     finally:
         app.dependency_overrides.clear()
+
+# Task4: 通过真实 SDK 调用验证既有 HTTP 错误契约的消费行为。
+@pytest.mark.parametrize("mode", ["legacy", "auto"])
+@pytest.mark.parametrize("code,status", [("DATASET_CHANGED", 409), ("OPERATION_CONFLICT", 409),
+                                         ("AMBIGUOUS_TARGET", 409), ("DATABASE_NOT_CONFIGURED", 503)])
+def test_sdk_preserves_upstream_failure_and_does_not_choose_or_retry(mode, code, status):
+    from mcp import Client
+    from app.mcp import policy
+    from app.mcp.server import build_server
+    from app.mcp.trace import Tracer
+    requests = []
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(status, json={"error": {"code": code, "message": LEAK, "retryable": True,
+                              "candidates": [{"id": "a", "name": "A", "path": ["A"], "status": "active"},
+                                             {"id": "b", "name": "B", "path": ["B"], "status": "active"}]}})
+    async def scenario():
+        upstream = client(handle)
+        server = build_server(upstream, policy, Tracer(), principal=PRINCIPAL, inbound_token=SecretStr("synthetic-mcp-token"), environment="production")
+        async with Client(server, mode=mode) as sdk:
+            result = await sdk.call_tool("find_departments", {"name": "A"})
+            wire = result.structured_content
+            assert wire["error"]["code"] == code
+            assert wire["error"]["retryable"] is True
+            assert LEAK not in json.dumps(wire)
+            if code == "AMBIGUOUS_TARGET":
+                assert len(wire["error"]["fields"][0]["candidates"]) == 2
+        assert len(requests) == 1
+    run(scenario())
+
+
+@pytest.mark.parametrize("mode", ["legacy", "auto"])
+def test_sdk_write_timeout_preserves_unconfirmed_and_get_operation_guidance(mode):
+    from mcp import Client
+    from app.mcp import policy
+    from app.mcp.server import build_server
+    from app.mcp.trace import Tracer
+    requests = []
+    def handle(request):
+        requests.append(request)
+        raise httpx.ReadTimeout(LEAK)
+    async def scenario():
+        principal = AgentPrincipal(actor_type="ci_agent", actor_id="a", environment="test", run_id="test-timeout")
+        upstream = CapabilityHttpClient(BASE, TOKEN, environment="test", transport=httpx.MockTransport(handle))
+        server = build_server(upstream, policy, Tracer(), principal=principal, inbound_token=SecretStr("synthetic-mcp-token"), environment="test")
+        async with Client(server, mode=mode) as sdk:
+            result = await sdk.call_tool("request_sync", {"job_type": "full", "idempotency_key": "key"})
+            wire = result.structured_content
+            assert wire["error"]["code"] == "UPSTREAM_TIMEOUT" and wire["error"]["retryable"] is False
+            assert wire["observation"] == {"execution_status": "unconfirmed"}
+            assert "get_operation" in wire["error"]["message"]
+            assert LEAK not in json.dumps(wire)
+        assert len(requests) == 1
+    run(scenario())
