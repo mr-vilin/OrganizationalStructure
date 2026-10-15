@@ -248,7 +248,7 @@ class OrganizationCapabilities:
     def request_sync(self, context, job_type, idempotency_key, approval_token=None, *, root_department_id=None):
         def submit(db, row, now):
             self._sync_scope(db, job_type, root_department_id)
-            job, reused = self.jobs.submit_in_session(db, job_type, root_department_id, context.actor_id, now)
+            job, reused = self.jobs.submit_in_session(db, job_type, root_department_id, context.actor_id, now, trigger_source=context.actor_type)
             db.flush()
             state = self.receipts._lock_state(db)
             self.receipts.mark_accepted(db, row.operation_id, job.id, state.dataset_epoch, state.data_version, {"job_id":job.id, "reused":reused}, now)

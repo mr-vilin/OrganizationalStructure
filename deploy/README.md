@@ -100,7 +100,25 @@ curl --fail http://127.0.0.1:8000/health/ready
 
 ## 数据库集成测试
 
-`compose.mysql-test.yaml` 是可丢弃的独立本机测试环境，使用公开的测试密码和 tmpfs，不用于正式部署。用户提供数据库环境后执行真实 MySQL 事务、并发、迁移与恢复验证。
+`compose.mysql-test.yaml` 是可丢弃的独立本机测试环境，使用公开的测试密码和 tmpfs，不用于正式部署。它显式设置数据库 `utf8mb4` / `utf8mb4_0900_as_cs`，仅绑定 `127.0.0.1:13306`，库名必须以 `_test` 结尾。
+
+迁移前检查、凭据文件格式、隔离环境的执行命令及 2026-10-15 便携 MySQL 8.4.11 的真实结果见[能力与观察层验收](../docs/运行与验收.md#能力与观察层验收2026-10-15)。Docker daemon 本轮仍不可用；便携 MySQL 的 18 项集成通过不代表 Docker、企业飞书或生产部署已验收。
+
+## 内部能力服务与 sidecar 边界
+
+内部端点前缀为 `/internal/capabilities`。部署时配置独立随机 `ORG_AGENT_SERVICE_TOKEN` 和 `ORG_AGENT_ENVIRONMENT=production`（隔离测试实例用 `test`）。令牌留空、错误或重复身份头均拒绝；只读 API 密钥、管理员 Cookie 和 CSRF 令牌不能替代此令牌。业务数据库仍由 `ORG_DATABASE_URL` 指向，运行时还需原有 `ORG_SESSION_SECRET`；服务令牌不得进入前端构建、浏览器、URL、访问日志或业务回执。
+
+sidecar 直接通过受控的容器私网连接后端，生产端口继续仅映射宿主机回环地址。只有持有该令牌的受信 sidecar 能声明 `X-Agent-Actor-Type`、`X-Agent-Actor-Id`、`X-Agent-Environment`、可选 `X-Agent-Run-Id` / `X-Agent-Case-Id` 和 `X-Agent-Approved`。这些头代表受信服务的声明，部署者必须在 sidecar 验证调用者身份、权限和人工批准，再重新构造；不得透传浏览器可控头。production 写操作要求明确 `X-Agent-Approved: true`；CI 仅允许 `test` 环境、`_test` 实际数据库和 `test-` / `test_` 前缀的 run_id。
+
+共享服务令牌不提供逐用户授权；不要把不可信客户端放入这个网络。外部 HTTPS 入口必须拒绝整个 `/internal` 路径，不能仅靠没有公开链接或 CORS 隐藏它。例如 Nginx 在普通代理规则前配置：
+
+```nginx
+location = /internal { return 404; }
+location ^~ /internal/ { return 404; }
+```
+
+以上是待部署的网络配置要求；本轮只验证代码与受控 HTTP 鉴权行为，没有部署真实 sidecar 或执行真实 Agent 调用。
+
 # 覆盖权限重新验收
 
 通讯录 scope 变更后，覆盖状态降为 unknown。具备部署主机及数据库配置权限的运维人员完成真实企业验收（已发布应用的全员权限、无部门员工覆盖）后，在 `backend` 目录执行：

@@ -3,6 +3,10 @@ import importlib.util
 
 from alembic.config import Config
 from alembic import command
+from sqlalchemy.dialects import mysql
+from sqlalchemy.schema import CreateTable
+
+from app.persistence.models import OperationReceipt
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "migrations" / "versions" / "0007_operation_receipt.py"
@@ -40,8 +44,42 @@ def test_operation_receipt_offline_sql_contains_only_new_table():
     assert "CREATE TABLE operation_receipt" in sql
     assert "ENGINE=InnoDB" in sql
     assert "utf8mb4" in sql
+    assert "COLLATE utf8mb4_0900_as_cs" in sql
     assert "操作回执" in sql
     assert "uq_operation_receipt_idempotency" in sql
     assert "ix_operation_receipt_job_id" in sql
     assert "ALTER TABLE sync_job" not in sql
+
+
+def test_operation_receipt_orm_and_migration_preserve_comments_and_binary_ids():
+    table = OperationReceipt.__table__
+    ddl = str(CreateTable(table).compile(dialect=mysql.dialect()))
+    assert "COLLATE utf8mb4_0900_as_cs" in ddl
+    assert "ENGINE=InnoDB" in ddl and "CHARSET=utf8mb4" in ddl
+    for column in table.columns:
+        assert column.comment and any('\u4e00' <= char <= '\u9fff' for char in column.comment)
+        assert column.comment in ddl
+    assert table.c.operation_id.type.collation == 'utf8mb4_bin'
+    assert table.c.idempotency_key.type.collation == 'utf8mb4_bin'
+    source = MIGRATION.read_text(encoding='utf-8')
+    for column in table.columns:
+        assert column.comment in source
+
+
+def test_mysql_engine_explicitly_sets_session_charset_and_collation(monkeypatch):
+    from app.persistence import database
+    calls = []
+    listeners = []
+    monkeypatch.setattr(database, 'create_engine', lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(database.event, 'listen', lambda *args: listeners.append(args))
+    database.create_mysql_engine('mysql+pymysql://unused:unused@localhost/unused_test?charset=latin1')
+    options = calls[0][1]
+    assert options['connect_args'] == {'charset': 'utf8mb4', 'collation': 'utf8mb4_0900_as_cs'}
+    assert options['isolation_level'] == 'REPEATABLE READ'
+    assert options['hide_parameters'] is True
+    from unittest.mock import Mock
+    connection = Mock()
+    assert listeners[0][1] == 'connect'
+    listeners[0][2](connection, None)
+    connection.set_character_set.assert_called_once_with('utf8mb4', 'utf8mb4_0900_as_cs')
 

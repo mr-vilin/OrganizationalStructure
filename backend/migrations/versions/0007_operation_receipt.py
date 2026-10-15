@@ -8,7 +8,7 @@ branch_labels = None
 depends_on = None
 
 SID = sa.String(191, collation="utf8mb4_bin")
-T = {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "comment": "Agent 操作回执记录"}
+T = {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_0900_as_cs", "comment": "Agent 操作回执记录"}
 
 
 def upgrade():

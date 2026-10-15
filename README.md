@@ -19,6 +19,7 @@
 - [管理端启动与操作](./docs/frontend-guide.md)
 - [部署、备份与恢复](./deploy/README.md)
 - [运行与验收台账](./docs/运行与验收.md)
+- [能力回执、内部鉴权与 MySQL 验收记录](./docs/运行与验收.md#能力与观察层验收2026-10-15)
 - [分任务进度与审查](./docs/superpowers/progress.md)
 - [产品版本记录](./CHANGELOG.md)
 

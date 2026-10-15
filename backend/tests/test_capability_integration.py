@@ -660,6 +660,34 @@ def test_facade_sync_reuse_retry_and_safe_evidence():
     finally: engine.dispose()
 
 
+@pytest.mark.parametrize('actor_type', ['human_agent', 'ci_agent'])
+def test_facade_long_actor_preserves_identity_and_bounded_original_trigger(actor_type):
+    sessions, engine = make_sessions()
+    original_actor = 'agent-' + 'a' * 185
+    first_context = agent(actor_type=actor_type, actor_id=original_actor, run_id='test-run')
+    other_context = agent(actor_type=actor_type, actor_id='other-agent', run_id='test-other')
+    try:
+        with sessions.begin() as db:
+            db.add(SystemSetting(key='task_queue_lock', value='1'))
+        service = facade(sessions)
+        accepted = service.request_sync(first_context, 'full', 'long-actor')
+        reused = service.request_sync(other_context, 'full', 'reused')
+        assert reused.data['job_id'] == accepted.data['job_id']
+        with sessions() as db:
+            job = db.get(SyncJob, accepted.data['job_id'])
+            assert job.requested_by == original_actor
+            assert job.trigger_source == actor_type
+            assert db.get(OperationReceipt, accepted.operation_id).actor_id == original_actor
+        jobs = SqlSyncJobRepository(sessions)
+        running = jobs.claim_next(datetime.now(), datetime.now() + timedelta(minutes=5))
+        jobs.mark_failed(running.id, running.lease_generation, 'REMOTE_ERROR', 'injected failure', datetime.now())
+        service.retry_sync_job(other_context, running.id, 'retry')
+        with sessions() as db:
+            assert db.get(SyncJob, running.id).trigger_source == actor_type
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.parametrize("failure", ["receipt", "audit"])
 def test_facade_atomic_store_failure_rolls_back_everything(failure):
     from app.capabilities.errors import CapabilityUnavailable

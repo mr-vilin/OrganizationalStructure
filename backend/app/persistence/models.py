@@ -327,5 +327,5 @@ class OperationReceipt(Base):
         Index("ix_operation_receipt_job_id", "job_id"),
         Index("ix_operation_receipt_error_code", "error_code"),
         Index("ix_operation_receipt_created_at", "created_at"),
-        {**TABLE_ARGS, "comment": "Agent 操作回执记录"},
+        {**TABLE_ARGS, "mysql_collate": "utf8mb4_0900_as_cs", "comment": "Agent 操作回执记录"},
     )
