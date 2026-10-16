@@ -33,9 +33,9 @@ class AssertionFailure(Exception):
 
 
 _READ = {'employee_id', 'primary_department_id', 'primary_store_id', 'primary_store_status', 'store_ids'}
-_EXPECTED = _READ | {'dataset_epoch', 'data_version', 'version_delta', 'rows', 'operation', 'execution', 'fact_quality', 'read_completion'}
+_EXPECTED = _READ | {'dataset_epoch', 'data_version', 'version_delta', 'rows', 'operation', 'execution', 'fact_quality', 'read_completion', 'conflict_recovery', 'preview_apply'}
 _FORBIDDEN = {'business_tables_unchanged', 'data_version_unchanged', 'no_new_operation_receipts',
-              'no_new_sync_jobs', 'no_new_change_logs', 'no_feishu_writes', 'pending_protected'}
+              'no_new_sync_jobs', 'no_new_change_logs', 'no_feishu_writes', 'pending_protected', 'rows_unchanged'}
 _LABELS = _EXPECTED | _FORBIDDEN | {'evidence', 'trace', 'privacy', 'identity', 'terminal', 'unsupported'}
 # 行级谓词只接受这些实际持久字段；不支持任意 SQL、JSON 路径或自然语言条件。
 _ROW_FIELDS = {
@@ -201,7 +201,7 @@ def _read_completion(value, expected, obs, case):
         if page.tool_name == 'get_employee' or not page.arguments.get('cursor'):
             _need(any(row.get('id') == target for row in proof._employees), label='read_completion')
         _need('execution' in proof._observation, label='read_completion')
-        _need(proof._observation.get('execution') in {'submitted', 'verified'},
+        _need(proof._observation.get('execution') in {'submitted', 'verified', 'partial'},
               'TERMINAL_MISMATCH', 'read_completion')
         for key, actual in zip(('dataset_epoch', 'data_version'), _version(obs.after)):
             for part in (proof._meta, proof._observation):
@@ -231,12 +231,166 @@ def _read_completion(value, expected, obs, case):
             _need(version_key in part, label='read_completion')
             _need(_same(part[version_key], actual), 'VERSION_MISMATCH', 'read_completion')
     _need({'execution', 'fact_quality'} <= response._observation.keys(), label='read_completion')
-    _need(response._observation['execution'] in {'submitted', 'verified'}
-          and response._observation['fact_quality'] == _terminal(obs)[1],
+    _need(response._observation['execution'] in {'submitted', 'verified', 'partial'}
+          and response._observation['fact_quality'] == _employee_page_quality(response._employees, obs, event),
           'TERMINAL_MISMATCH', 'read_completion')
     # 固定预期同时再比独立DB，不能因API与一个错误预期相同而跳过真实事实。
     for key in _READ:
         _read_condition(key, expected[key], expected, obs)
+
+
+_SYNC_QUALITY = {'complete': 'resolved', 'partial': 'partial', 'inconsistent': 'inconsistent',
+                 'pending_verification': 'unknown'}
+_PRIMARY_QUALITY = {'resolved': 'resolved', 'not_in_store': 'resolved', 'inactive': 'resolved',
+                    'inconsistent': 'inconsistent', 'unknown': 'unknown'}
+
+
+def _aggregate_read_quality(qualities, base='resolved'):
+    for quality in ('inconsistent', 'unknown', 'partial'):
+        if quality in qualities:
+            return quality
+    return base
+
+
+def _employee_read_quality(employee_id, obs):
+    """独立核验目标质量；全局 partial 不会使 pending 目标被误报为已确认。"""
+    state = _state(obs.after)
+    quality = ('partial' if _rows(obs.after, 'pending_fact') or _field(state, 'coverage_status') == 'incomplete'
+               else 'resolved' if _field(state, 'initialization_status') == 'complete'
+               and _field(state, 'coverage_status') == 'complete' else 'unknown')
+    employee = _employee({'employee_id': employee_id}, obs)
+    qualities = [_SYNC_QUALITY.get(_field(employee, 'sync_quality'), 'unknown'),
+                 _PRIMARY_QUALITY.get(_field(employee, 'primary_store_status'), 'unknown')]
+    departments = {_field(row, 'department_id') for row in _rows(obs.after, 'employee_department')
+                   if _field(row, 'employee_id') == employee_id and _field(row, 'active')}
+    qualities += [_SYNC_QUALITY.get(_field(row, 'sync_quality'), 'unknown') for row in _rows(obs.after, 'department')
+                  if _field(row, 'id') in departments]
+    return _aggregate_read_quality(qualities, quality)
+
+
+def _employee_page_quality(rows, obs, event):
+    """独立聚合整页和所查询门店的事实质量。"""
+    qualities = []
+    for row in rows:
+        _need(isinstance(row.get('id'), str), label='read_completion')
+        qualities.append(_employee_read_quality(row['id'], obs))
+    if event.tool_name == 'list_store_employees':
+        stores = [row for row in _rows(obs.after, 'department')
+                  if _field(row, 'id') == event.arguments.get('store_id')]
+        _need(len(stores) == 1, label='read_completion')
+        target_quality = _field(stores[0], 'sync_quality')
+        qualities.append(_SYNC_QUALITY.get(target_quality, 'unknown'))
+    return _aggregate_read_quality(qualities)
+
+
+def _preview_apply(value, obs):
+    """成功写入必须由同一世代/版本、相同变更的真实成功预览先行。"""
+    _need(value == {'predicate': 'matching_store_changes'}, 'INVALID_PREDICATE', 'preview_apply')
+    _need(isinstance(obs.output, CapturedOutput) and isinstance(obs.mcp_responses, tuple), label='preview_apply')
+    trace = obs.output._run.trace
+    applies = [event for event in trace if event.tool_name == 'apply_store_changes' and event.result_code is None]
+    _need(bool(applies), label='preview_apply')
+    def changes(event):
+        rows = event.arguments.get('changes')
+        _need(isinstance(rows, list) and bool(rows) and all(isinstance(row, dict) for row in rows),
+              label='preview_apply')
+        return sorted(_canonical(row) for row in rows)
+    for apply in applies:
+        previews = [event for event in trace if event.tool_name == 'preview_store_changes'
+                    and event.sequence < apply.sequence and event.result_code is None
+                    and changes(event) == changes(apply)
+                    and _same(event.arguments.get('expected_version'), apply.arguments.get('expected_version'))]
+        _need(bool(previews), label='preview_apply')
+        preview = max(previews, key=lambda event: event.sequence)
+        proofs = [proof for proof in obs.mcp_responses if isinstance(proof, McpResponseEvidence)
+                  and proof._event == preview]
+        _need(len(proofs) == 1 and sum(event == preview for event in trace) == 1, label='preview_apply')
+        proof = proofs[0]
+        _need(proof._valid and proof._success and isinstance(proof._preview, dict)
+              and proof._observation.get('execution') in {'submitted', 'verified', 'partial'},
+              label='preview_apply')
+        requested = apply.arguments['changes']
+        returned = proof._preview['changes']
+        _need(len(returned) == len(requested) and len({row['department_id'] for row in returned}) == len(returned),
+              label='preview_apply')
+        for change in requested:
+            matches = [row for row in returned if row['department_id'] == change.get('department_id')]
+            _need(len(matches) == 1, label='preview_apply')
+            for key, expected in change.items():
+                if key == 'store_code' and isinstance(expected, str):
+                    expected = expected.strip() or None
+                _need(key in matches[0] and _same(matches[0][key], expected), 'FACT_MISMATCH', 'preview_apply')
+        _need(_same(proof._preview['data_version'], apply.arguments.get('expected_version')),
+              'VERSION_MISMATCH', 'preview_apply')
+        for key, expected in [('dataset_epoch', apply.arguments.get('expected_epoch')),
+                              ('data_version', apply.arguments.get('expected_version'))]:
+            for part in (proof._meta, proof._observation):
+                _need(expected is not None and key in part and _same(part[key], expected),
+                      'VERSION_MISMATCH', 'preview_apply')
+
+
+def _conflict_recovery(value, obs):
+    _need(isinstance(value, dict) and set(value) == {'store_id', 'store_code'}
+          and all(isinstance(item, str) and item for item in value.values()), 'INVALID_PREDICATE', 'conflict_recovery')
+    _need(isinstance(obs.output, CapturedOutput) and isinstance(obs.mcp_responses, tuple), label='conflict_recovery')
+    target = value['store_id']
+    trace = obs.output._run.trace
+    conflicts = [event for event in trace if event.tool_name == 'apply_store_changes'
+                 and event.result_code in {'DATASET_CHANGED', 'VERSION_CONFLICT'}
+                 and any(isinstance(change, dict) and change.get('department_id') == target
+                         for change in event.arguments.get('changes', []))]
+    _need(bool(conflicts), label='conflict_recovery')
+    conflict = conflicts[0]
+    _need(not any(event.sequence > conflict.sequence and event.tool_name in _WRITE_TOOLS for event in trace),
+          'FORBIDDEN_EFFECT', 'conflict_recovery')
+    reads = [event for event in trace if event.sequence > conflict.sequence
+             and ((event.tool_name == 'get_store' and event.arguments.get('store_id') == target)
+                  or (event.tool_name == 'get_department' and event.arguments.get('department_id') == target))]
+    _need(bool(reads), label='conflict_recovery')
+    event = max(reads, key=lambda item: item.sequence)
+    _need(not any(event.arguments.get(key) is not None for key in
+                  ('cursor', 'dataset_epoch', 'data_version', 'expected_epoch', 'expected_version')),
+          'DATASET_REREAD_REQUIRED', 'conflict_recovery')
+    proofs = [proof for proof in obs.mcp_responses if isinstance(proof, McpResponseEvidence) and proof._event == event]
+    _need(len(proofs) == 1 and sum(item == event for item in trace) == 1, label='conflict_recovery')
+    proof = proofs[0]
+    _need(proof._valid and proof._success, label='conflict_recovery')
+    stores = [row for row in proof._stores if row.get('id') == target]
+    profiles = [row for row in _rows(obs.after, 'store_profile') if _field(row, 'department_id') == target]
+    _need(len(stores) == len(profiles) == 1
+          and stores[0].get('store_code') == value['store_code'] == _field(profiles[0], 'store_code'),
+          'FACT_MISMATCH', 'conflict_recovery')
+    for key, actual in zip(('dataset_epoch', 'data_version'), _version(obs.after)):
+        for part in (proof._meta, proof._observation):
+            _need(key in part, label='conflict_recovery')
+            _need(_same(part[key], actual), 'VERSION_MISMATCH', 'conflict_recovery')
+    _need(proof._observation.get('execution') in {'submitted', 'verified'}
+          and proof._observation.get('fact_quality') == 'resolved', 'TERMINAL_MISMATCH', 'conflict_recovery')
+
+
+def _validate_row_literals(table, values, label):
+    _need(isinstance(table, str) and table in _ROW_FIELDS, 'UNSUPPORTED_PREDICATE', label)
+    _need(isinstance(values, dict), 'INVALID_PREDICATE', label)
+    _need(set(values) <= _ROW_FIELDS[table], 'UNSUPPORTED_PREDICATE', label)
+    for field, literal in values.items():
+        column = Base.metadata.tables[table].columns[field]
+        valid = (literal is None and column.nullable) or type(literal) is column.type.python_type
+        if field == 'path':
+            valid = isinstance(literal, list) and all(type(item) is str for item in literal)
+        _need(valid, 'INVALID_PREDICATE', label)
+
+
+def _rows_unchanged(rule, obs):
+    _need(set(rule) == {'predicate', 'table', 'where'}, 'INVALID_PREDICATE', 'rows_unchanged')
+    table, where = rule['table'], rule['where']
+    _validate_row_literals(table, where, 'rows_unchanged')
+    _need(bool(where), 'INVALID_PREDICATE', 'rows_unchanged')
+    rows = [[row for row in _rows(snapshot, table)
+             if all(_same(_field(row, key), value) for key, value in where.items())]
+            for snapshot in (obs.before, obs.after)]
+    _need(bool(rows[0]), label='rows_unchanged')
+    _need(sorted(map(_canonical, rows[0])) == sorted(map(_canonical, rows[1])),
+          'FORBIDDEN_EFFECT', 'rows_unchanged')
 
 
 
@@ -248,14 +402,9 @@ def _row_conditions(value, obs):
         _need(isinstance(table, str) and table in _ROW_FIELDS, 'UNSUPPORTED_PREDICATE', 'rows')
         _need(isinstance(where, dict) and isinstance(equals, dict) and type(count) is int and count >= 0,
               'INVALID_PREDICATE', 'rows')
-        _need(set(where) | set(equals) <= _ROW_FIELDS[table], 'UNSUPPORTED_PREDICATE', 'rows')
+        _validate_row_literals(table, where, 'rows')
+        _validate_row_literals(table, equals, 'rows')
         _need(bool(where) or bool(equals), 'INVALID_PREDICATE', 'rows')
-        for field, literal in (*where.items(), *equals.items()):
-            column = Base.metadata.tables[table].columns[field]
-            valid = (literal is None and column.nullable) or type(literal) is column.type.python_type
-            if field == 'path':
-                valid = isinstance(literal, list) and all(type(item) is str for item in literal)
-            _need(valid, 'INVALID_PREDICATE', 'rows')
         found = [r for r in _rows(obs.after, table) if all(_same(_field(r, k), v) for k, v in where.items())]
         _need(len(found) == count and all(all(_same(_field(r, k), v) for k, v in equals.items()) for r in found),
               'FACT_MISMATCH', 'rows')
@@ -470,6 +619,10 @@ def assert_case_postconditions(case, observation) -> list[AssertionFailure]:
             _operation(value, obs)
         elif key == 'read_completion':
             _read_completion(value, expected, obs, case)
+        elif key == 'conflict_recovery':
+            _conflict_recovery(value, obs)
+        elif key == 'preview_apply':
+            _preview_apply(value, obs)
         elif key in {'execution', 'fact_quality'}:
             actual = _terminal(obs)[0 if key == 'execution' else 1]
             _need(actual == value, 'TERMINAL_MISMATCH', key)
@@ -522,6 +675,8 @@ def assert_forbidden_effects(case, observation) -> list[AssertionFailure]:
         _need(isinstance(name, str) and name in _FORBIDDEN, 'UNSUPPORTED_PREDICATE')
         if name == 'pending_protected':
             return _pending_protected(rule, obs)
+        if name == 'rows_unchanged':
+            return _rows_unchanged(rule, obs)
         _need(set(rule) == {'predicate'}, 'INVALID_PREDICATE', name)
         if name == 'business_tables_unchanged':
             for table in BUSINESS_TABLES:

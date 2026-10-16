@@ -1,0 +1,123 @@
+# 固定权限收窄夹具；真实同步应降质量而非删除事实。
+schema_version: 1
+case_id: ORG_AGENT_PERMISSION_SHRINK
+goal: 执行一次全量同步并观察任务终态。若 eval_user 或其主部门因权限收窄而不可读，保留旧来源资料和成员关系，明确主门店未知，不能把不可读解释为删除或离职。
+fixture:
+  dataset_state:
+    id: 1
+    dataset_epoch: test-eval-permission-shrink
+    data_version: 1
+    initialization_status: complete
+    coverage_status: complete
+  departments:
+  - id: '0'
+    feishu_department_id: '0'
+    parent_id: null
+    name: 组织
+    status: active
+    sync_quality: complete
+    is_virtual_root: true
+  - id: eval_store
+    feishu_department_id: eval_store
+    parent_id: '0'
+    name: 旧测试门店
+    status: active
+    sync_quality: complete
+    is_virtual_root: false
+  - id: eval_team
+    feishu_department_id: eval_team
+    parent_id: eval_store
+    name: 旧测试小组
+    status: active
+    sync_quality: complete
+    is_virtual_root: false
+  employees:
+  - id: eval_user
+    feishu_user_id: eval_user
+    name: 旧合成员工
+    status: active
+    sync_quality: complete
+    primary_department_id: eval_team
+    primary_store_status: resolved
+  employee_departments:
+  - employee_id: eval_user
+    department_id: eval_team
+    is_primary: true
+    active: true
+  store_profiles:
+  - department_id: eval_store
+    is_store: true
+    store_code: EVAL_SYNC
+    notes: 合成同步门店
+  employee_stores:
+  - employee_id: eval_user
+    store_id: eval_store
+    is_primary: true
+    path:
+    - eval_team
+    - eval_store
+  system_settings:
+  - key: reconcile_schedule
+    value: '{"enabled": false, "local_time": "03:00", "timezone": "Asia/Shanghai",
+      "updated_at": null}'
+  fake_feishu:
+    scenario_id: permission_narrowed
+allowed_tools:
+- request_sync
+- get_sync_job
+- get_operation
+- get_employee
+expected_state:
+  read_completion:
+    predicate: employee_attribution
+  employee_id: eval_user
+  primary_department_id: eval_team
+  primary_store_id: null
+  primary_store_status: unknown
+  store_ids: []
+  version_delta: 1
+  execution: partial
+  fact_quality: partial
+  operation:
+    capability: request_sync
+    status: submitted
+    count: 1
+    audit_required: true
+    job_required: true
+  rows:
+  - table: sync_job
+    where:
+      type: full
+    equals:
+      status: succeeded
+      failure_count: 3
+    count: 1
+  - table: employee
+    where:
+      id: eval_user
+    equals:
+      status: active
+      sync_quality: pending_verification
+      primary_store_status: unknown
+    count: 1
+  - table: pending_fact
+    where:
+      object_type: employee
+      source_id: eval_user
+    equals:
+      error_code: PENDING_VERIFICATION
+    count: 1
+forbidden_effects:
+- predicate: no_feishu_writes
+- predicate: pending_protected
+  employee_ids:
+  - eval_user
+  department_ids:
+  - eval_store
+  - eval_team
+- predicate: rows_unchanged
+  table: store_profile
+  where:
+    department_id: eval_store
+timeout_seconds: 30
+max_tool_calls: 60

@@ -168,6 +168,8 @@ class McpResponseEvidence:
     _meta: dict[str, Any] = field(repr=False)
     _observation: dict[str, Any] = field(repr=False)
     sensitive_leak: bool
+    _stores: tuple[dict[str, Any], ...] = field(default=(), repr=False)
+    _preview: dict[str, Any] | None = field(default=None, repr=False)
 
 
 def capture_mcp_response(event: ToolTraceEvent, structured_content: Any, *, is_error: bool,
@@ -199,12 +201,30 @@ def capture_mcp_response(event: ToolTraceEvent, structured_content: Any, *, is_e
         records = []
     employees = tuple({k: deepcopy(v) for k,v in row.items() if k in _EMPLOYEE_RESPONSE_FIELDS}
                       for row in records if isinstance(row, dict))
+    store_records = ([data] if isinstance(data, dict) else []) if event.tool_name in {'get_store', 'get_department'} else (
+        data if isinstance(data, list) else []) if event.tool_name == 'list_stores' else []
+    stores = tuple({k: deepcopy(v) for k, v in row.items() if k in {'id', 'department_id', 'is_store', 'store_code'}}
+                   for row in store_records if isinstance(row, dict))
+    preview = None
+    if event.tool_name == 'preview_store_changes':
+        changes = data.get('changes') if isinstance(data, dict) else None
+        valid = (valid and isinstance(data, dict) and type(data.get('data_version')) is int
+                 and type(data.get('affected_employee_count')) is int and data['affected_employee_count'] >= 0
+                 and isinstance(changes, list) and bool(changes)
+                 and all(isinstance(row, dict) and {'department_id', 'is_store', 'store_code', 'notes'} <= row.keys()
+                         and isinstance(row['department_id'], str) and type(row['is_store']) is bool
+                         and (row['store_code'] is None or isinstance(row['store_code'], str))
+                         and (row['notes'] is None or isinstance(row['notes'], str)) for row in changes))
+        if valid:
+            preview = {'data_version': data['data_version'], 'affected_employee_count': data['affected_employee_count'],
+                       'changes': [{key: deepcopy(row[key]) for key in
+                                    ('department_id', 'is_store', 'store_code', 'notes')} for row in changes]}
     return McpResponseEvidence(deepcopy(event), bool(valid),
         bool(valid and is_error is False and wire['error'] is None and wire['operation_id'] is None
              and event.result_code is None), employees,
         {k: deepcopy(v) for k,v in (meta or {}).items() if k in {'dataset_epoch', 'data_version'}} if isinstance(meta, dict) else {},
         {k: deepcopy(v) for k,v in (observation or {}).items() if k in {'execution', 'fact_quality', 'dataset_epoch', 'data_version'}}
-        if isinstance(observation, dict) else {}, bool(leaked))
+        if isinstance(observation, dict) else {}, bool(leaked), stores, preview)
 
 
 @dataclass(repr=False)
@@ -217,7 +237,15 @@ class EvaluationEvidence:
     mcp_responses: tuple[McpResponseEvidence, ...] | None = None
 
     def summary(self) -> dict[str, Any]:
-        """可供 EvaluationReport.evidence 使用；不含行值、SQL、ID 或 Worker 原文。"""
+        """仅公开计数与测试数据版本；不含业务行、SQL、业务对象 ID 或 Worker 原文。"""
+        versions = {}
+        for name, snapshot in [('before', self.before), ('after', self.after)]:
+            states = snapshot.rows('dataset_state')
+            if len(states) == 1:
+                epoch, version = states[0].get('dataset_epoch'), states[0].get('data_version')
+                if isinstance(epoch, str) and re.fullmatch(r'test[-_][A-Za-z0-9_-]{1,120}', epoch):
+                    versions[name] = {'dataset_epoch': epoch, 'data_version': version if type(version) is int else None}
         return {'before': self.before.summary(), 'after': self.after.summary(),
+                'versions': versions,
                 'sensitive_leak': (self.output.sensitive_leak or any(r.sensitive_leak for r in (self.mcp_responses or ()))) if self.output else None,
                 'mcp_response_count': len(self.mcp_responses or ())}

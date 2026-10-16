@@ -27,11 +27,13 @@ from app.persistence.models import WorkerLease, SyncJob, EventInbox
 from app.persistence.read_service import SqlReadService
 from app.persistence.repositories import SqlSyncJobRepository
 from app.stores.service import StoreAdminService
+from app.stores.domain import StorePatch
+from app.persistence.database import create_mysql_engine, session_factory
 from app.sync.collector import Collector
 from app.sync.worker import Worker, utcnow
 from .evidence import independent_reader
 from .fake_feishu import FakeFeishu
-from .fixtures import evaluation_database, seed_case
+from .fixtures import evaluation_database, seed_case, verify_test_database
 
 
 class SystemHarness:
@@ -139,6 +141,19 @@ class SystemHarness:
     def snapshot(self):
         with independent_reader(self._url) as reader:
             return reader.snapshot()
+
+    def change_store_concurrently(self, store_id, store_code, expected_version):
+        """可信测试控制面通过独立连接执行正常门店写入，不伪造版本或 Worker 回执。"""
+        if self._sessions is None or self._closed:
+            raise RuntimeError('EVALUATION_HARNESS_NOT_OPEN')
+        engine = create_mysql_engine(self._url)
+        try:
+            with engine.connect() as connection:
+                verify_test_database(connection)
+            StoreAdminService(session_factory(engine)).apply(
+                [StorePatch(store_id, True, store_code)], expected_version, 'evaluation-concurrent', utcnow())
+        finally:
+            engine.dispose()
 
     def fake_writes(self):
         return {'count': self.fake.write_attempt_count, 'by_method': self.fake.write_attempts_by_method}

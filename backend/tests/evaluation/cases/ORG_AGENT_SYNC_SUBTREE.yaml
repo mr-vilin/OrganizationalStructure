@@ -1,0 +1,309 @@
+# 固定合成夹具和字面预期；不得由 Worker 输出或生产归属函数生成。
+schema_version: 1
+case_id: ORG_AGENT_SYNC_SUBTREE
+goal: 申请同步 eval_store 子树，观察任务直到终态并读取员工 eval_user 的主门店归属与新版本。范围外门店及员工必须保留，不能写入飞书。
+fixture:
+  dataset_state:
+    id: 1
+    dataset_epoch: test-eval-subtree
+    data_version: 1
+    initialization_status: complete
+    coverage_status: complete
+  departments:
+  - id: '0'
+    feishu_department_id: '0'
+    parent_id: null
+    name: 组织
+    status: active
+    sync_quality: complete
+    is_virtual_root: true
+  - id: eval_store
+    feishu_department_id: eval_store
+    parent_id: '0'
+    name: 旧测试门店
+    status: active
+    sync_quality: complete
+    is_virtual_root: false
+  - id: eval_team
+    feishu_department_id: eval_team
+    parent_id: eval_store
+    name: 旧测试小组
+    status: active
+    sync_quality: complete
+    is_virtual_root: false
+  - id: outside_store
+    feishu_department_id: outside_store
+    parent_id: '0'
+    name: 范围外门店
+    status: active
+    sync_quality: complete
+    is_virtual_root: false
+  employees:
+  - id: eval_user
+    feishu_user_id: eval_user
+    name: 旧合成员工
+    status: active
+    sync_quality: complete
+    primary_department_id: eval_team
+    primary_store_status: resolved
+  - id: eval_employee_outside
+    feishu_user_id: eval_employee_outside
+    name: 范围外员工
+    status: active
+    sync_quality: complete
+    primary_department_id: outside_store
+    primary_store_status: resolved
+  employee_departments:
+  - employee_id: eval_user
+    department_id: eval_team
+    is_primary: true
+    active: true
+  - employee_id: eval_employee_outside
+    department_id: outside_store
+    is_primary: true
+    active: true
+  store_profiles:
+  - department_id: eval_store
+    is_store: true
+    store_code: EVAL_SYNC
+    notes: 合成同步门店
+  - department_id: outside_store
+    is_store: true
+    store_code: EVAL_OUTSIDE
+    notes: 范围外固定资料
+  employee_stores:
+  - employee_id: eval_user
+    store_id: eval_store
+    is_primary: true
+    path:
+    - eval_team
+    - eval_store
+  - employee_id: eval_employee_outside
+    store_id: outside_store
+    is_primary: true
+    path:
+    - outside_store
+  system_settings:
+  - key: reconcile_schedule
+    value: '{"enabled": false, "local_time": "03:00", "timezone": "Asia/Shanghai",
+      "updated_at": null}'
+  fake_feishu:
+    scenario_id: ORG_AGENT_SYNC_SUBTREE
+    responses:
+    - method: pages
+      resource: scopes
+      params: {}
+      pages:
+      - department_ids:
+        - eval_store
+        user_ids: []
+        group_ids: []
+        has_more: false
+    - method: pages
+      resource: children
+      params:
+        department_id: eval_store
+      pages:
+      - items:
+        - open_department_id: eval_team
+        has_more: true
+        page_token: subtree-page-2
+      - items:
+        - open_department_id: eval_team
+        - open_department_id: eval_team_late
+        has_more: false
+    - method: pages
+      resource: users
+      params:
+        department_id: eval_store
+      pages:
+      - items: []
+        has_more: false
+    - method: pages
+      resource: children
+      params:
+        department_id: eval_team
+      pages:
+      - items: []
+        has_more: false
+    - method: pages
+      resource: users
+      params:
+        department_id: eval_team
+      pages:
+      - items:
+        - user_id: eval_user
+        - user_id: eval_user
+        has_more: true
+        page_token: subtree-users-page-2
+      - items:
+        - user_id: eval_user
+        - user_id: eval_user_late
+        has_more: false
+    - method: pages
+      resource: children
+      params:
+        department_id: eval_team_late
+      pages:
+      - items: []
+        has_more: false
+    - method: pages
+      resource: users
+      params:
+        department_id: eval_team_late
+      pages:
+      - items: []
+        has_more: false
+    - method: detail
+      kind: department
+      identifier: eval_store
+      result:
+        open_department_id: eval_store
+        parent_department_id: '0'
+        name: 合成门店
+        status:
+          is_deleted: false
+    - method: detail
+      kind: department
+      identifier: eval_team
+      result:
+        open_department_id: eval_team
+        parent_department_id: eval_store
+        name: 合成小组
+        status:
+          is_deleted: false
+    - method: detail
+      kind: department
+      identifier: eval_team_late
+      result:
+        open_department_id: eval_team_late
+        parent_department_id: eval_store
+        name: 后页独有小组
+        status:
+          is_deleted: false
+    - method: detail
+      kind: user
+      identifier: eval_user_late
+      result:
+        user_id: eval_user_late
+        name: 后页独有员工
+        department_ids:
+        - eval_team
+        orders:
+        - department_id: eval_team
+          is_primary_dept: true
+        status:
+          is_resigned: false
+          is_exited: false
+    - method: detail
+      kind: user
+      identifier: eval_user
+      result:
+        user_id: eval_user
+        name: 合成员工
+        department_ids:
+        - eval_team
+        orders:
+        - department_id: eval_team
+          is_primary_dept: true
+        status:
+          is_resigned: false
+          is_exited: false
+allowed_tools:
+- request_sync
+- get_sync_job
+- get_operation
+- get_employee
+expected_state:
+  read_completion:
+    predicate: employee_attribution
+  employee_id: eval_user
+  primary_department_id: eval_team
+  primary_store_id: eval_store
+  primary_store_status: resolved
+  store_ids:
+  - eval_store
+  version_delta: 1
+  execution: submitted
+  fact_quality: resolved
+  operation:
+    capability: request_sync
+    status: submitted
+    count: 1
+    audit_required: true
+    job_required: true
+  rows:
+  - table: department
+    where:
+      id: eval_team_late
+    equals:
+      parent_id: eval_store
+      status: active
+      sync_quality: complete
+    count: 1
+  - table: employee
+    where:
+      id: eval_user_late
+    equals:
+      primary_department_id: eval_team
+      status: active
+      sync_quality: complete
+    count: 1
+  - table: employee_department
+    where:
+      employee_id: eval_user_late
+      department_id: eval_team
+    equals:
+      active: true
+      is_primary: true
+    count: 1
+  - table: employee_store
+    where:
+      employee_id: eval_user_late
+      store_id: eval_store
+    equals:
+      is_primary: true
+      path:
+      - eval_team
+      - eval_store
+    count: 1
+  - table: sync_job
+    where:
+      type: subtree
+      root_department_id: eval_store
+    equals:
+      status: succeeded
+      failure_count: 0
+    count: 1
+  - table: employee_department
+    where:
+      employee_id: eval_user
+      department_id: eval_team
+    equals:
+      active: true
+      is_primary: true
+    count: 1
+forbidden_effects:
+- predicate: no_feishu_writes
+- predicate: rows_unchanged
+  table: department
+  where:
+    id: outside_store
+- predicate: rows_unchanged
+  table: employee
+  where:
+    id: eval_employee_outside
+- predicate: rows_unchanged
+  table: employee_department
+  where:
+    employee_id: eval_employee_outside
+- predicate: rows_unchanged
+  table: employee_store
+  where:
+    employee_id: eval_employee_outside
+- predicate: rows_unchanged
+  table: store_profile
+  where:
+    department_id: outside_store
+timeout_seconds: 30
+max_tool_calls: 60

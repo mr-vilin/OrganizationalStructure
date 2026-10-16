@@ -11,7 +11,7 @@ from app.evaluation.runner import EvaluationRunner
 from app.evaluation.worker import ScriptedWorkerAgent, ToolStep
 from app.evaluation.report import report_json, report_markdown
 
-CASE = Path(__file__).parent / 'cases/org_agent_read_primary_store.yaml'
+CASE = Path(__file__).parent / 'cases/ORG_AGENT_READ_PRIMARY_STORE.yaml'
 
 class HarnessDouble:
     def __init__(self, case, context):
@@ -102,7 +102,7 @@ def test_unquiet_blocks_next_case_and_recover_is_explicit():
     assert run.recover()
     assert instances[0].log[-1] == 'reset_final'
 
-@pytest.mark.parametrize('filename', ['org_agent_read_primary_store.yaml', 'org_agent_read_not_in_store.yaml'])
+@pytest.mark.parametrize('filename', ['ORG_AGENT_READ_PRIMARY_STORE.yaml', 'ORG_AGENT_READ_NOT_IN_STORE.yaml'])
 def test_real_mysql_official_mcp_vertical(filename):
     import os
     from sqlalchemy import select, func

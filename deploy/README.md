@@ -100,6 +100,18 @@ curl --fail http://127.0.0.1:8000/health/ready
 
 ## 数据库集成测试
 
+Agent Evaluation 使用通用 Python 模块入口，默认串行。先准备独占、可清空的 MySQL 8.4 `_test` 库，字符集与排序规则为 `utf8mb4` / `utf8mb4_0900_as_cs`；按[测试迁移与评测命令](../docs/运行与验收.md#agent-evaluation-测试迁移与命令)核实实际目标并迁移。不要把已有生产环境的 `ORG_DATABASE_URL` 带入迁移进程。
+
+从仓库根目录执行（凭据通过受控环境注入 `ORG_TEST_DATABASE_URL`，不要写入命令、报告或 Git）：
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path backend).Path
+backend/.venv/Scripts/python.exe -m pytest backend/tests/evaluation deploy/tests/test_evaluation_runtime.py -q
+backend/.venv/Scripts/python.exe -m app.evaluation.cli --suite smoke --output .superpowers/evaluation-reports
+```
+
+CLI 的 `--case ORG_AGENT_VERSION_CONFLICT` 可筛选单例；退出码 `0` 为全部硬门槛通过、`1` 为硬断言失败、`2` 为配置/迁移/环境安全失败。没有实际 `_test` MySQL 不会降级为 SQLite 或模拟成功。报告为脱敏 JSON/中文 Markdown，软评分不改变退出码。脚本 Worker 与 Fake Feishu 用于普通 CI；真实模型、企业飞书和 Docker 运行分别验收。
+
 `compose.mysql-test.yaml` 是可丢弃的独立本机测试环境，使用公开的测试密码和 tmpfs，不用于正式部署。它显式设置数据库 `utf8mb4` / `utf8mb4_0900_as_cs`，仅绑定 `127.0.0.1:13306`，库名必须以 `_test` 结尾。
 
 迁移前检查、凭据文件格式、隔离环境的执行命令及 2026-10-15 便携 MySQL 8.4.11 的真实结果见[能力与观察层验收](../docs/运行与验收.md#能力与观察层验收2026-10-15)。Docker daemon 本轮仍不可用；便携 MySQL 的 18 项集成通过不代表 Docker、企业飞书或生产部署已验收。
