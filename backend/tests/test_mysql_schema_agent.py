@@ -82,4 +82,3 @@ def test_mysql_engine_explicitly_sets_session_charset_and_collation(monkeypatch)
     assert listeners[0][1] == 'connect'
     listeners[0][2](connection, None)
     connection.set_character_set.assert_called_once_with('utf8mb4', 'utf8mb4_0900_as_cs')
-
