@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .contracts import AgentContext
 from .errors import OperationConflict, OperationNotFound
-from app.persistence.models import ChangeLog, DatasetState, OperationReceipt, SyncJob
+from app.persistence.models import ChangeLog, DatasetState, OperationReceipt, SyncJob, SyncJobDetail
 
 
 _SENSITIVE = ('token', 'secret', 'password', 'credential', 'authorization', 'api_key')
@@ -159,8 +159,13 @@ class ReceiptRepository:
         rows = list(db.scalars(select(OperationReceipt).where(
             OperationReceipt.job_id == job.id, OperationReceipt.status == 'accepted',
         ).order_by(OperationReceipt.operation_id).with_for_update().execution_options(populate_existing=True)))
+        # 与终态及审计在同一事务冻结；当前读避免沿用调用方较早的 RR 快照。
+        failed_detail_count = len(list(db.scalars(select(SyncJobDetail.id).where(
+            SyncJobDetail.job_id == job.id, SyncJobDetail.status == 'failed',
+        ).with_for_update())))
         summary = {'job_id': job.id, 'status': job.status,
-                   'success_count': job.success_count, 'failure_count': job.failure_count}
+                   'success_count': job.success_count, 'failure_count': job.failure_count,
+                   'failed_detail_count': failed_detail_count}
         if changed_count is not None:
             summary['changed_count'] = changed_count
         audit_ids = list(db.scalars(select(ChangeLog.id).where(ChangeLog.job_id == job.id).order_by(ChangeLog.id).with_for_update()))
@@ -170,7 +175,7 @@ class ReceiptRepository:
                            and row.before_epoch == row.committed_epoch == 'pending')
             if not (same_epoch or first_epoch):
                 self._update(db, row, 'failed', {
-                    'error_code': 'DATASET_CHANGED', 'result_summary': {**_sanitize({'job_id': job.id}), 'audit_ids': _audit_ids(audit_ids)},
+                    'error_code': 'DATASET_CHANGED', 'result_summary': {**_sanitize({'job_id': job.id, 'failed_detail_count': failed_detail_count}), 'audit_ids': _audit_ids(audit_ids)},
                 }, now)
                 continue
             if job.status == 'failed':

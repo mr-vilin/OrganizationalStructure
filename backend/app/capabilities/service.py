@@ -276,14 +276,26 @@ class OrganizationCapabilities:
         epoch = row.committed_epoch if row.committed_epoch is not None else row.before_epoch
         version = row.committed_version if row.committed_version is not None else row.before_version
         status = {"recorded":"request_recorded", "accepted":"accepted", "submitted":"submitted", "failed":"failed"}.get(row.status, "unconfirmed")
-        obs = self.observations.observation_for_status(db, status, row.job_id) if status != "request_recorded" else self.observations._base(db, status)
-        if row.status == "accepted" and row.job_id:
+        summary = _sanitize({k:v for k,v in (row.result_summary or {}).items() if k != "audit_ids"})
+        if row.status in {"submitted", "failed"}:
+            evidence = {"status": status}
+            if row.job_id:
+                evidence["job_id"] = row.job_id
+            failed = summary.get("failed_detail_count")
+            if type(failed) is int and failed >= 0:
+                evidence["failed_detail_count"] = failed
+                if failed and status == "submitted":
+                    status = "partial"
+            # 终态只用已冻结的任务证据；旧回执缺失的计数不从后续重试猜补。
+            obs = self.observations._base(db, status, evidence, fact_quality="partial" if status == "partial" else None)
+        elif row.status == "accepted" and row.job_id:
             obs = self.observations.observation_for_job(db, row.job_id)
+        else:
+            obs = self.observations.observation_for_status(db, status, row.job_id) if status != "request_recorded" else self.observations._base(db, status)
         if status == "unconfirmed": obs = replace(obs, execution="unconfirmed", fact_quality="unknown", next_action="inspect_status")
         if current is None or current.dataset_epoch != epoch:
             obs = replace(obs, execution="unconfirmed", fact_quality="inconsistent", next_action="refresh_dataset")
         obs = replace(obs, dataset_epoch=epoch, data_version=version, evidence={**obs.evidence, "current_dataset_epoch":current.dataset_epoch if current else None, "current_data_version":current.data_version if current else None})
-        summary = _sanitize({k:v for k,v in (row.result_summary or {}).items() if k != "audit_ids"})
         audits = list((row.result_summary or {}).get("audit_ids", []))
         if row.status == "accepted" and row.job_id:
             audits = list(db.scalars(select(ChangeLog.id).where(ChangeLog.job_id == row.job_id).order_by(ChangeLog.id)))

@@ -30,7 +30,11 @@ flowchart LR
 
 能力层复用既有门店与同步服务，并以调用方事务保证业务变化、数据版本、审计和回执绑定。`dataset_epoch` 与 `data_version` 共同表示数据世代；Agent 应用门店预览必须同时绑定二者。幂等键按主体与环境隔离；写响应丢失后可通过 `get_operation` 观察，结果未确认不自动重写。任务自身保留 queued/running/succeeded/failed 等状态，Observation 额外表达 execution 与 fact_quality，不能把 succeeded 直接等同 verified。
 
+终态同步回执的失败明细数与原摘要、审计在同一事务冻结，后续重试不改写原操作的任务证据；旧终态回执缺失的计数不从当前任务猜补。`accepted` 回执及 `get_sync_job` 反映当前任务；`current_dataset_epoch`、`current_data_version` 和事实质量仍明确描述当前数据集，世代不一致时不能声称历史操作已证明当前事实。
+
 MCP 采用独立包、官方 SDK 和内部 HTTP 客户端，不依赖 ORM。入站 MCP 令牌与后端身份声明令牌分别管理。可信服务配置绑定主体、环境、运行与用例身份；模型参数和任意客户端头不能声明身份或批准。生产 L2 只有可信宿主明确确认才写入；取消、拒绝、不支持、超时默认拒绝。CI 不访问生产，即使读取也拒绝。
+
+显式部署与默认 HTTP 工厂共用安全拒绝边界。固定 SDK 的 loopback 默认防护设置显式传给本地边界和 SDK，认证先行；被拒绝的 Host/Origin 只记录固定代码，保持原 DNS rebinding 防护。升级 SDK 时需核对这一默认配置适配。
 
 Evaluation 的固定 YAML 是预期事实源，Worker 只拿目标、受限 MCP client 和运行身份，拿不到 fixture、expected、数据库、Fake 控制面或断言。Runner 可信边界采集真实响应与轨迹，Evaluator 通过独立只读 RR 连接核验事实、投影、版本、任务、回执及审计。不复用生产归属函数生成答案，也不把 Worker 自报 trace 或最终文本当实际证据。
 
@@ -109,6 +113,8 @@ C、M、E 分别对应能力观察层、MCP 适配层、Evaluation 三份实施�
 | E94 | Task 5 补充封闭的 rows_unchanged 与 conflict_recovery 谓词、最小私有门店响应证明，以及目标事实质量与全局质量的独立核验；由可信 after_tool hook 通过独立 MySQL 连接调用正常 StoreAdminService.apply 制造一次并发门店变更。理由：范围外事实不可被漏验，最终数据库正确不能代替真实冲突及冲突后读取证明，pending 目标也不能因全局 partial 被假报 resolved。 | 调整评测私有证据、断言和合成用例，不改生产接口、归属算法或数据库结构。 | 原始裁决明列 |
 | E96 | Task 6 可选模型诊断在 redacted_test_only 策略下只外发允许的工具名、布尔值和行数，goal 与 final_text 自由文本整体遮盖；默认不创建 provider、不联网。理由：现阶段没有已批准的员工原文外发规则，完整遮盖可避免仅靠模式匹配遗漏姓名或任意敏感原文。 | 未来在单独批准的数据策略下增加字段级脱敏及相关验证；当前诊断的语义信息量较少，不可宣称真实模型理解能力验收。 | 原始裁决明列 |
 | E97 | Task 5 审查补充 preview_apply 硬谓词，必须以可信成功预览证明相同变更、世代及版本先于应用；子树夹具的部门和员工后页均加入独有事实及字面预期，并用丢页和跳过预览的真实 MySQL mutation 验证不会误过。理由：脚本执行了正确步骤不能代替 Evaluator 证明这些要求，重复数据页也不能证明范围完整。 | 调整评测封闭谓词、合成 YAML 与回归，不修改生产服务或数据库结构。 | 原始裁决明列 |
+| E105 | 终态同步回执在原 finalize 事务中以当前锁读冻结 failed_detail_count 至已有 result_summary JSON，终态 get_operation 仅使用冻结任务证据；accepted 回执和 get_sync_job 继续返回当前任务，旧终态缺失的计数不从后续重试猜补。理由：原失败摘要与审计已冻结，混入后来成功的明细会使同一持久操作的证据串轮；独立 MySQL 双事务回归同时核验旧 RR 快照和重试后的稳定性。 | 调整回执 JSON 摘要、终态观察构造和相关回归，无 DDL 或生产数据回填，旧回执继续兼容。 | 原始裁决明列 |
+| E106 | 将固定官方 SDK 对默认 loopback host 的有效 TransportSecuritySettings 在本地显式化，同一配置同时供 SafeTransportBoundary 与 SDK 使用，保持认证优先、421/403 和原防护。理由：仅识别显式参数会漏掉 SDK 隐式默认拒绝日志，原始恶意头可能含秘密。 | 调整默认配置适配及真实 ASGI 回归；将来升级 SDK 时核对默认值，无全局日志屏蔽或第三方包修改。 | 原始裁决明列 |
 
 ## 程序性引用完整性
 
@@ -116,4 +122,4 @@ C、M、E 分别对应能力观察层、MCP 适配层、Evaluation 三份实施�
 
 C34、C43、C82、C85、C98、C131、M20、M23、M40、M54、M62、M96、M97、M98、E45、E56、E67、E80。
 
-合计 73 条来源行，其中 55 条实际实施裁决。
+合计 75 条来源行，其中 57 条实际实施裁决。

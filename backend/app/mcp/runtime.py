@@ -7,6 +7,7 @@ import logging
 
 from mcp.server import MCPServer
 from mcp.server.request_state import RequestStateSecurity
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent
 from pydantic import SecretStr
 from starlette.datastructures import Headers
@@ -120,8 +121,16 @@ class CapabilityServer(MCPServer):
                          lifespan=lifespan, middleware=[bound_call], request_state_security=security)
 
     def streamable_http_app(self, **kwargs):
-        app = super().streamable_http_app(**kwargs)
         security = kwargs.get("transport_security")
+        if security is None and kwargs.get("host", "127.0.0.1") in {"127.0.0.1", "localhost", "::1"}:
+            # 与已固定 SDK 的 localhost 默认值一致，并将同一配置传给前置边界和 SDK。
+            security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
+                allowed_origins=["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"],
+            )
+            kwargs["transport_security"] = security
+        app = super().streamable_http_app(**kwargs)
         if security is not None:
             app.add_middleware(SafeTransportBoundary, settings=security)
         # add_middleware 的后加项在外层：先认证，再安全拒绝，再由 SDK 原防护复核。

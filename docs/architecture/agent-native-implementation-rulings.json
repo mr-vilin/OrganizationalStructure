@@ -728,5 +728,25 @@
     "decision_zh": "Task 5 审查补充 preview_apply 硬谓词，必须以可信成功预览证明相同变更、世代及版本先于应用；子树夹具的部门和员工后页均加入独有事实及字面预期，并用丢页和跳过预览的真实 MySQL mutation 验证不会误过。理由：脚本执行了正确步骤不能代替 Evaluator 证明这些要求，重复数据页也不能证明范围完整。",
     "reversal_cost_zh": "调整评测封闭谓词、合成 YAML 与回归，不修改生产服务或数据库结构。",
     "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E105",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 105,
+    "kind": "实施裁决",
+    "text": "Ruling: 终态同步回执在原 finalize 事务中以当前锁读冻结 failed_detail_count 至已有 result_summary JSON，终态 get_operation 仅使用冻结任务证据；accepted 回执和 get_sync_job 继续返回当前任务，旧终态缺失的计数不从后续重试猜补。理由：原失败摘要与审计已冻结，混入后来成功的明细会使同一持久操作的证据串轮；独立 MySQL 双事务回归同时核验旧 RR 快照和重试后的稳定性。撤回成本：调整回执 JSON 摘要、终态观察构造和相关回归，无 DDL 或生产数据回填，旧回执继续兼容。",
+    "decision_zh": "终态同步回执在原 finalize 事务中以当前锁读冻结 failed_detail_count 至已有 result_summary JSON，终态 get_operation 仅使用冻结任务证据；accepted 回执和 get_sync_job 继续返回当前任务，旧终态缺失的计数不从后续重试猜补。理由：原失败摘要与审计已冻结，混入后来成功的明细会使同一持久操作的证据串轮；独立 MySQL 双事务回归同时核验旧 RR 快照和重试后的稳定性。",
+    "reversal_cost_zh": "调整回执 JSON 摘要、终态观察构造和相关回归，无 DDL 或生产数据回填，旧回执继续兼容。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E106",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 106,
+    "kind": "实施裁决",
+    "text": "Ruling: 将固定官方 SDK 对默认 loopback host 的有效 TransportSecuritySettings 在本地显式化，同一配置同时供 SafeTransportBoundary 与 SDK 使用，保持认证优先、421/403 和原防护。理由：仅识别显式参数会漏掉 SDK 隐式默认拒绝日志，原始恶意头可能含秘密。撤回成本：调整默认配置适配及真实 ASGI 回归；将来升级 SDK 时核对默认值，无全局日志屏蔽或第三方包修改。",
+    "decision_zh": "将固定官方 SDK 对默认 loopback host 的有效 TransportSecuritySettings 在本地显式化，同一配置同时供 SafeTransportBoundary 与 SDK 使用，保持认证优先、421/403 和原防护。理由：仅识别显式参数会漏掉 SDK 隐式默认拒绝日志，原始恶意头可能含秘密。",
+    "reversal_cost_zh": "调整默认配置适配及真实 ASGI 回归；将来升级 SDK 时核对默认值，无全局日志屏蔽或第三方包修改。",
+    "cost_basis": "原始裁决明列"
   }
 ]

@@ -339,3 +339,41 @@ def test_mysql_actual_session_pool_reuse_reconnect_and_receipt_schema(independen
         ddl = reconnected.execute(text('SHOW CREATE TABLE operation_receipt')).one()[1]
         assert 'ENGINE=InnoDB' in ddl and 'COLLATE=utf8mb4_0900_as_cs' in ddl
         assert 'UNIQUE KEY `uq_operation_receipt_idempotency` (`actor_id`,`environment`,`idempotency_key`)' in ddl
+
+
+def test_mysql_terminal_detail_snapshot_uses_current_read_and_survives_retry(independent_capability_mysql):
+    sessions, ids, actor = independent_capability_mysql
+    service = capability(sessions)
+    accepted = service.request_sync(context(actor), 'full', 'detail-snapshot')
+    job_id = accepted.data['job_id']
+    jobs = SqlSyncJobRepository(sessions)
+    running = jobs.claim_next(datetime.now(), datetime.now() + timedelta(minutes=5))
+    with sessions() as reader, reader.begin():
+        reader_id = reader.scalar(text('SELECT CONNECTION_ID()'))
+        # 先建立看不到失败明细的旧 Read View，再由独立事务记录失败。
+        assert list(reader.scalars(select(SyncJobDetail.id).where(SyncJobDetail.job_id == job_id))) == []
+        with sessions.begin() as writer:
+            assert writer.scalar(text('SELECT CONNECTION_ID()')) != reader_id
+            writer.scalar(select(DatasetState).where(DatasetState.id == 1).with_for_update())
+            job = writer.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update())
+            Publisher._record_detail(writer, job_id, 'department', ids['shop'], None, 'failed', datetime.now(), error_code='REMOTE_ERROR')
+            job.failure_count = 1
+        reader.scalar(select(DatasetState).where(DatasetState.id == 1).with_for_update())
+        job = reader.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update().execution_options(populate_existing=True))
+        job.status, job.error_code, job.lease_expires_at = 'failed', 'REMOTE_ERROR', None
+        ReceiptRepository().finalize_job_in_session(reader, job, datetime.now())
+    original = service.get_operation(context(actor), operation_id=accepted.operation_id)
+    assert original.data['summary']['failed_detail_count'] == 1
+    assert original.observation.evidence['failed_detail_count'] == 1
+    retried = service.retry_sync_job(context(actor), job_id, 'detail-snapshot-retry')
+    running = jobs.claim_next(datetime.now(), datetime.now() + timedelta(minutes=5))
+    with sessions.begin() as db:
+        db.scalar(select(DatasetState).where(DatasetState.id == 1).with_for_update())
+        job = db.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update())
+        Publisher._record_detail(db, job_id, 'department', ids['shop'], None, 'succeeded', datetime.now())
+        job.success_count, job.failure_count = 1, 0
+    jobs.mark_succeeded(job_id, running.lease_generation, datetime.now())
+    assert service.get_operation(context(actor), operation_id=accepted.operation_id).to_dict() == original.to_dict()
+    latest = service.get_operation(context(actor), operation_id=retried.operation_id)
+    assert latest.data['summary']['failed_detail_count'] == 0
+    assert latest.observation.execution == 'submitted'

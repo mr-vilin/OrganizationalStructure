@@ -205,12 +205,13 @@ def test_production_resolve_requires_strict_human_accept(mode, name, arguments, 
 
 
 @pytest.mark.parametrize("mode", ["legacy", "auto"])
-def test_missing_elicitation_capability_does_not_write(mode):
+@pytest.mark.parametrize("name,arguments,_method,_path", WRITES)
+def test_missing_elicitation_capability_does_not_write(mode, name, arguments, _method, _path):
     async def scenario():
         requests = []
         async with Client(make_server(requests, production=True), mode=mode) as client:
             try:
-                result = await client.call_tool("request_sync", {"job_type": "full", "idempotency_key": "key"})
+                result = await client.call_tool(name, arguments)
                 assert result.is_error or result.structured_content["error"]
             except Exception as error:
                 from mcp.shared.exceptions import MCPError
@@ -272,7 +273,8 @@ def test_sensitive_validation_input_not_echoed_or_traced(mode, caplog, capfd):
 
 
 @pytest.mark.parametrize("mode", ["legacy", "auto"])
-def test_confirmation_timeout_never_writes(mode):
+@pytest.mark.parametrize("name,arguments,_method,_path", WRITES)
+def test_confirmation_timeout_never_writes(mode, name, arguments, _method, _path):
     async def scenario():
         requests = []
         async def delayed(_context, _params):
@@ -280,7 +282,7 @@ def test_confirmation_timeout_never_writes(mode):
             return ElicitResult(action="accept", content={"confirmed": True})
         async with Client(make_server(requests, production=True, timeout=0.05), mode=mode, elicitation_callback=delayed) as client:
             try:
-                result = await client.call_tool("request_sync", {"job_type": "full", "idempotency_key": "key"})
+                result = await client.call_tool(name, arguments)
                 assert result.is_error or result.structured_content["error"]
             except Exception as error:
                 from mcp.shared.exceptions import MCPError
@@ -332,7 +334,8 @@ def test_sdk_sealed_confirmation_binds_tool_and_all_write_arguments(entry, key, 
 
 
 @pytest.mark.parametrize("mode", ["legacy", "auto"])
-def test_http_production_elicitation_is_hidden_and_authenticated(mode):
+@pytest.mark.parametrize("name,arguments,_method,_path", WRITES)
+def test_http_production_elicitation_is_hidden_and_authenticated(mode, name, arguments, _method, _path):
     async def scenario():
         requests = []
         async def elicit(_context, _params):
@@ -340,7 +343,7 @@ def test_http_production_elicitation_is_hidden_and_authenticated(mode):
         async with serve_http(make_server(requests, production=True)) as endpoint:
             async with httpx2.AsyncClient(headers={"Authorization": "Bearer synthetic-mcp-token"}) as http:
                 async with Client(streamable_http_client(endpoint, http_client=http), mode=mode, elicitation_callback=elicit) as client:
-                    result = await client.call_tool("request_sync", {"job_type": "full", "idempotency_key": "key"})
+                    result = await client.call_tool(name, arguments)
                     assert result.structured_content["error"] is None
         assert len(requests) == 1 and requests[0].headers["X-Agent-Approved"] == "true"
     asyncio.run(scenario())
@@ -461,17 +464,17 @@ def test_page_schema_upper_bound_and_sync_enum_values(mode):
     asyncio.run(scenario())
 
 
-def test_modern_input_responses_without_server_state_cannot_authorize():
+@pytest.mark.parametrize("name,arguments,_method,_path", WRITES)
+def test_modern_input_responses_without_server_state_cannot_authorize(name, arguments, _method, _path):
     from mcp.types import InputRequiredResult
     async def scenario():
         requests = []
         async def elicit(_context, _params):
             return ElicitResult(action="cancel")
         async with Client(make_server(requests, production=True), elicitation_callback=elicit) as client:
-            arguments = {"job_type": "full", "idempotency_key": "key"}
-            pending = await client.session.call_tool("request_sync", arguments, allow_input_required=True)
+            pending = await client.session.call_tool(name, arguments, allow_input_required=True)
             answers = {key: ElicitResult(action="accept", content={"confirmed": True}) for key in pending.input_requests}
-            result = await client.session.call_tool("request_sync", arguments, input_responses=answers, allow_input_required=True)
+            result = await client.session.call_tool(name, arguments, input_responses=answers, allow_input_required=True)
             assert isinstance(result, InputRequiredResult)
             assert requests == []
     asyncio.run(scenario())

@@ -984,6 +984,59 @@ def test_review_i3_failed_operation_audits_survive_later_retry():
     finally: engine.dispose()
 
 
+def test_final_review_historical_failed_details_survive_retry_and_success():
+    sessions, engine = make_sessions()
+    operation_id = running_receipt(sessions)
+    try:
+        with sessions.begin() as db:
+            db.get(SyncJob, "job").failure_count = 2
+            for identifier in ("first", "second"):
+                Publisher._record_detail(db, "job", "department", identifier, None, "failed", datetime.now(), error_code="SYNC_FAILED")
+        jobs = SqlSyncJobRepository(sessions)
+        jobs.mark_failed("job", 1, "SYNC_FAILED", "synthetic failure", datetime.now())
+        service = facade(sessions)
+        original = service.get_operation(agent(), operation_id=operation_id)
+        assert original.observation.evidence["failed_detail_count"] == 2
+        assert original.data["summary"]["failure_count"] == 2
+
+        retry = service.retry_sync_job(agent(), "job", "historical-details-retry")
+        claimed = jobs.claim_next(datetime.now(), datetime.now() + timedelta(hours=1))
+        assert claimed is not None
+        for remaining, identifier in ((1, "first"), (0, "second")):
+            with sessions.begin() as db:
+                Publisher._record_detail(db, "job", "department", identifier, None, "succeeded", datetime.now())
+            historical = service.get_operation(agent(), operation_id=operation_id)
+            assert historical.data["status"] == "failed"
+            assert historical.data["summary"]["failure_count"] == 2
+            assert historical.observation.evidence["failed_detail_count"] == 2
+            current = service.get_sync_job(agent(), "job")
+            assert current.observation.evidence.get("failed_detail_count", 0) == remaining
+        with sessions.begin() as db:
+            job = db.get(SyncJob, "job")
+            job.success_count, job.failure_count = 2, 0
+        jobs.mark_succeeded("job", claimed.lease_generation, datetime.now())
+        final_retry = service.get_operation(agent(), operation_id=retry.operation_id)
+        assert final_retry.data["summary"]["failed_detail_count"] == 0
+        assert final_retry.observation.execution == "submitted"
+        assert service.get_operation(agent(), operation_id=operation_id).to_dict() == original.to_dict()
+    finally: engine.dispose()
+
+
+def test_final_review_terminal_receipt_without_snapshot_does_not_guess_details():
+    sessions, engine = make_sessions()
+    operation_id = running_receipt(sessions)
+    try:
+        with sessions.begin() as db:
+            receipt = db.get(OperationReceipt, operation_id)
+            receipt.status, receipt.error_code = "failed", "SYNC_FAILED"
+            receipt.result_summary = {"failure_count": 2}
+            Publisher._record_detail(db, "job", "department", "later", None, "failed", datetime.now(), error_code="SYNC_FAILED")
+        result = facade(sessions).get_operation(agent(), operation_id=operation_id)
+        assert "failed_detail_count" not in result.observation.evidence
+        assert result.observation.evidence["job_id"] == "job"
+    finally: engine.dispose()
+
+
 @pytest.mark.parametrize("expected", [{"dataset_epoch":"old"}, {"data_version":6}])
 def test_review_i1_explicit_dataset_expectation_applies_to_first_page(expected):
     sessions, engine = make_sessions()

@@ -212,7 +212,8 @@ def test_probe_stalled_real_http_is_bounded_and_safe():
 
 
 @pytest.mark.parametrize("header,status", [("Host", 421), ("Origin", 403)])
-def test_transport_rejection_does_not_echo_sensitive_headers(header, status, caplog, capsys):
+@pytest.mark.parametrize("factory", ["configured", "default", "explicit_none", "localhost", "ipv6"])
+def test_transport_rejection_does_not_echo_sensitive_headers(header, status, factory, caplog, capsys):
     from pydantic import SecretStr
     from starlette.testclient import TestClient
     from app.mcp.config import MCPSettings, create_server, http_app
@@ -224,10 +225,21 @@ def test_transport_rejection_does_not_echo_sensitive_headers(header, status, cap
                            agent_service_token=SecretStr(secrets.token_urlsafe(32)),
                            mcp_capability_base_url="http://127.0.0.1:1", agent_environment="test",
                            mcp_actor_type="ci_agent", mcp_actor_id="rejection-test", mcp_run_id="test-rejection")
-    app = http_app(create_server(settings), host="0.0.0.0", port=8001)
+    server = create_server(settings)
+    if factory == "configured":
+        app = http_app(server, host="0.0.0.0", port=8001)
+        authority = "mcp:8001"
+    else:
+        options = {}
+        if factory == "explicit_none":
+            options["transport_security"] = None
+        elif factory in {"localhost", "ipv6"}:
+            options["host"] = "localhost" if factory == "localhost" else "::1"
+        app = server.streamable_http_app(**options)
+        authority = "localhost:8001"
     headers = {"Authorization": "Bearer " + settings.mcp_service_token.get_secret_value(),
-               "Host": "mcp:8001", "Origin": "http://mcp:8001"}
-    with TestClient(app, base_url="http://mcp:8001") as client:
+               "Host": authority, "Origin": "http://" + authority}
+    with TestClient(app, base_url="http://" + authority) as client:
         caplog.clear()
         with caplog.at_level("WARNING"):
             result = client.post("/mcp", headers={**headers, header: credential_url}, json={})
