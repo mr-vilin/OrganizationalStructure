@@ -1,16 +1,35 @@
 """仅序列化 Runner 已公开的证据；不接收原始响应、快照或 Worker 对话。"""
-from dataclasses import asdict
+from copy import deepcopy
+from dataclasses import asdict, replace
 import json
-import math
 from pathlib import Path
 
 from .models import EvaluationReport
+from .judge import DeterministicJudge, OptionalLlmJudge, validate_scores
+
+
+def diagnose_report(case, report, final_text, *, judge=None, llm_judge=None):
+    """返回增加诊断的副本；硬结果及失败码原样保留，异常只记录固定安全状态。"""
+    evidence = deepcopy(report.evidence)
+    metadata = evidence.setdefault('metadata', {})
+    try:
+        scores = validate_scores((judge or DeterministicJudge()).score(case, report, final_text), allow_empty=False)
+        metadata['judge'] = 'completed'
+    except Exception:
+        scores = {}
+        metadata['judge'] = 'failed'
+    optional = llm_judge or OptionalLlmJudge()
+    try:
+        llm_scores = validate_scores(optional.score(case, report, final_text))
+        status = optional.status if optional.status in {'disabled', 'completed', 'failed'} else 'failed'
+    except Exception:
+        llm_scores, status = {}, 'failed'
+    metadata['llm_judge'] = {'status': status, 'scores': llm_scores}
+    return replace(report, soft_scores=scores, evidence=evidence)
 
 
 def report_json(report: EvaluationReport) -> str:
-    if any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1
-           for v in report.soft_scores.values()):
-        raise ValueError('EVALUATION_SCORE_INVALID')
+    validate_scores(report.soft_scores)
     return json.dumps(asdict(report), ensure_ascii=False, indent=2, allow_nan=False)
 
 

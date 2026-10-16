@@ -5,11 +5,12 @@ import threading
 import time
 from uuid import uuid4
 
-from .assertions import assert_case_postconditions, assert_forbidden_effects, assert_trace_policy
+from .assertions import assert_case_postconditions, assert_forbidden_effects, assert_trace_policy, _terminal
 from .cases import validate_case
 from .evidence import EvaluationEvidence, capture_worker_output, capture_mcp_response
 from .models import AgentRun, AgentRunContext, EvaluationReport, ToolTraceEvent
 from .worker import ScriptedWorkerAgent
+from .report import diagnose_report
 
 
 def _utc():
@@ -95,7 +96,7 @@ class TrustedCalls:
 
 class EvaluationRunner:
     def __init__(self, worker=None, *, database_url=None, harness_factory=None,
-                 actor_id='evaluation-ci', shutdown_timeout=5.0, after_tool=None):
+                 actor_id='evaluation-ci', shutdown_timeout=5.0, after_tool=None, judge=None, llm_judge=None):
         if shutdown_timeout <= 0: raise ValueError('EVALUATION_SHUTDOWN_TIMEOUT_INVALID')
         if harness_factory is None:
             from .harness import SystemHarness
@@ -106,6 +107,7 @@ class EvaluationRunner:
         if after_tool is not None and not callable(after_tool):
             raise ValueError('EVALUATION_AFTER_TOOL_HOOK_INVALID')
         self.after_tool = after_tool
+        self.judge, self.llm_judge = judge, llm_judge
         self.shutdown_timeout = shutdown_timeout
         self._retained = None
         self._serial = threading.Lock()
@@ -125,7 +127,8 @@ class EvaluationRunner:
                 case, context, harness, name, arguments, result)
         calls = TrustedCalls(harness, case, deadline, after_call=hook)
         errors, result = [], []
-        evidence = {'metadata': {'judge': 'disabled'}, 'execution': 'unconfirmed'}
+        evidence = {'metadata': {'environment': 'test'}, 'execution': 'unconfirmed'}
+        safe_final_text = ''
         safe_trace = ()
         before = None
         def execute():
@@ -167,6 +170,7 @@ class EvaluationRunner:
                     except Exception:
                         captured.sensitive_leak = True
                     safe_trace = captured.redacted_run.trace
+                    safe_final_text = captured.redacted_run.final_text
                     if before is not None and after is not None:
                         observation = EvaluationEvidence(before, after, context, harness.fake_writes(), captured,
                                                          mcp_responses=tuple(calls.proofs))
@@ -175,6 +179,7 @@ class EvaluationRunner:
                                     + assert_trace_policy(case, raw.trace))
                         errors.extend(f.code for f in failures)
                         evidence.update(observation.summary())
+                        evidence['observed'] = dict(zip(('execution', 'fact_quality'), _terminal(observation)))
                 except Exception:
                     errors.append('EVIDENCE_FAILED')
                 finally:
@@ -190,7 +195,8 @@ class EvaluationRunner:
         else:
             evidence.pop('execution', None)
         evidence['metadata']['runner_status'] = 'unconfirmed' if errors else 'completed'
-        return EvaluationReport(case.case_id, context.run_id, not errors, errors, {}, evidence, safe_trace)
+        report = EvaluationReport(case.case_id, context.run_id, not errors, errors, {}, evidence, safe_trace)
+        return diagnose_report(case, report, safe_final_text, judge=self.judge, llm_judge=self.llm_judge)
 
     def _quiet(self, harness, calls):
         deadline = time.monotonic() + self.shutdown_timeout

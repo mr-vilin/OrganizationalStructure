@@ -112,6 +112,8 @@ backend/.venv/Scripts/python.exe -m app.evaluation.cli --suite smoke --output .s
 
 CLI 的 `--case ORG_AGENT_VERSION_CONFLICT` 可筛选单例；退出码 `0` 为全部硬门槛通过、`1` 为硬断言失败、`2` 为配置/迁移/环境安全失败。没有实际 `_test` MySQL 不会降级为 SQLite 或模拟成功。报告为脱敏 JSON/中文 Markdown，软评分不改变退出码。脚本 Worker 与 Fake Feishu 用于普通 CI；真实模型、企业飞书和 Docker 运行分别验收。
 
+默认输出五维规则软分及 `llm_judge.status=disabled`。可选模型诊断必须由可信调用方显式注入 model、provider 与 `redacted_test_only` 策略，当前只发送允许的工具名、布尔值与行数，自由文本整体遮盖；模型异常仅记录安全失败状态。配置和元数据位置见[软诊断口径](../docs/运行与验收.md#agent-evaluation-软诊断)，普通 CLI 不隐式启用外部模型。
+
 `compose.mysql-test.yaml` 是可丢弃的独立本机测试环境，使用公开的测试密码和 tmpfs，不用于正式部署。它显式设置数据库 `utf8mb4` / `utf8mb4_0900_as_cs`，仅绑定 `127.0.0.1:13306`，库名必须以 `_test` 结尾。
 
 迁移前检查、凭据文件格式、隔离环境的执行命令及 2026-10-15 便携 MySQL 8.4.11 的真实结果见[能力与观察层验收](../docs/运行与验收.md#能力与观察层验收2026-10-15)。Docker daemon 本轮仍不可用；便携 MySQL 的 18 项集成通过不代表 Docker、企业飞书或生产部署已验收。
