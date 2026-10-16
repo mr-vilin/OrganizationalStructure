@@ -717,3 +717,116 @@ def test_fix1_existing_audit_target_is_checked_even_when_final_state_has_no_net_
     c = replace(c, expected_state={**c.expected_state, 'operation': {
         **c.expected_state['operation'], 'audit_required': False}})
     assert 'AUDIT_MISSING' in codes(assert_case_postconditions(c, obs))
+
+
+@pytest.mark.parametrize('variant',['new_final','old_only','late_failure','late_missing_proof','unrelated_failure','late_list_failure'])
+def test_task4_completion_uses_last_target_read_without_erasing_history(variant):
+    c,obs=case(),evidence()
+    target={'employee_id':c.expected_state['employee_id']}
+    first=event(arguments=target)
+    old=read_wire(c)
+    final=deepcopy(old)
+    if variant in {'new_final','old_only'}:
+        obs.after._tables['dataset_state'][0]['data_version']=2
+        final['data']['meta']['data_version']=2
+        final['observation']['data_version']=2
+    events,wires=[first],[old]
+    if variant=='late_list_failure':
+        first=event('list_store_employees',arguments={'store_id':'store_people'})
+        old['data']['data']=[old['data']['data']]
+        events,wires=[first],[old]
+    if variant!='old_only':
+        late=event(tool=first.tool_name,arguments=first.arguments,sequence=2)
+        if variant=='unrelated_failure': late=replace(late,arguments={'employee_id':'unrelated'})
+        if variant not in {'new_final','late_missing_proof'}:
+            late=replace(late,result_code='NOT_FOUND')
+            final={'operation_id':None,'data':None,'observation':{},'audit':{},'error':{'code':'NOT_FOUND'}}
+        events.append(late)
+        if variant!='late_missing_proof': wires.append(final)
+    attach_read_proofs(obs,events,wires)
+    failures=assert_case_postconditions(c,obs)
+    if variant in {'new_final','unrelated_failure'}:
+        assert failures==[]
+    else:
+        assert failures
+
+
+def test_task4_historical_response_leak_is_still_hard_failure():
+    c,obs=case(),evidence()
+    old,new=read_wire(c),read_wire(c)
+    old['data']['private']='Bearer synthetic-private-canary'
+    attach_read_proofs(obs,[event(arguments={'employee_id':c.expected_state['employee_id']},sequence=n) for n in (1,2)],[old,new])
+    assert 'SENSITIVE_LEAK' in codes(assert_case_postconditions(c,obs))
+
+
+@pytest.mark.parametrize('tool,defaults', [
+    ('list_store_employees', {'membership': 'all', 'include_inactive': False, 'limit': 20}),
+    ('list_employees', {'include_descendants': False, 'include_inactive': False,
+                        'department_id': None, 'store_id': None, 'primary_store_id': None, 'limit': 20}),
+])
+def test_task4_equivalent_default_query_cannot_hide_later_failure(tool, defaults):
+    c, obs = case(), evidence()
+    c = replace(c, allowed_tools=(*c.allowed_tools, tool))
+    arguments = {'store_id': 'store_people'} if tool == 'list_store_employees' else {}
+    first = event(tool, arguments=arguments)
+    late = event(tool, sequence=2, arguments={**arguments, **defaults})
+    late = replace(late, result_code='NOT_FOUND')
+    wire = read_wire(c)
+    wire['data']['data'] = [wire['data']['data']]
+    failed = {'operation_id': None, 'data': None, 'observation': {}, 'audit': {},
+              'error': {'code': 'NOT_FOUND'}}
+    attach_read_proofs(obs, [first, late], [wire, failed])
+    assert 'MISSING_EVIDENCE' in codes(assert_case_postconditions(c, obs))
+
+
+@pytest.mark.parametrize('variant', ['next_page', 'restart_empty', 'failed_page', 'old_page'])
+def test_task4_list_completion_preserves_target_across_valid_following_pages(variant):
+    c, obs = case(), evidence()
+    first = event('list_store_employees', arguments={'store_id': 'store_people'})
+    late = event('list_store_employees', sequence=2,
+                 arguments={'store_id': 'store_people', 'cursor': 'synthetic-page-2'})
+    wire, page = read_wire(c), read_wire(c)
+    wire['data']['data'] = [wire['data']['data']]
+    page['data']['data'] = [{**page['data']['data'], 'id': 'other_employee'}]
+    if variant == 'restart_empty':
+        late = replace(late, arguments={'store_id': 'store_people'})
+    if variant == 'failed_page':
+        late = replace(late, result_code='NOT_FOUND')
+        page['error'] = {'code': 'NOT_FOUND'}
+    if variant == 'old_page':
+        page['data']['meta']['data_version'] = 0
+    attach_read_proofs(obs, [first, late], [wire, page])
+    failures = assert_case_postconditions(c, obs)
+    assert not failures if variant == 'next_page' else failures
+
+
+def test_task4_pagination_cannot_erase_intermediate_direct_target_failure():
+    c, obs = case(), evidence()
+    first = event('list_store_employees', arguments={'store_id': 'store_people'})
+    direct = replace(event(sequence=2, arguments={'employee_id': c.expected_state['employee_id']}),
+                     result_code='NOT_FOUND')
+    late = event('list_store_employees', sequence=3,
+                 arguments={'store_id': 'store_people', 'cursor': 'synthetic-page-2'})
+    wire, page = read_wire(c), read_wire(c)
+    wire['data']['data'] = [wire['data']['data']]
+    page['data']['data'] = [{**page['data']['data'], 'id': 'other_employee'}]
+    failed = {'operation_id': None, 'data': None, 'observation': {}, 'audit': {},
+              'error': {'code': 'NOT_FOUND'}}
+    attach_read_proofs(obs, [first, direct, late], [wire, failed, page])
+    assert 'MISSING_EVIDENCE' in codes(assert_case_postconditions(c, obs))
+
+
+def test_task4_pagination_cannot_erase_failure_from_another_target_query():
+    c, obs = case(), evidence()
+    events = [event('list_store_employees', sequence=1, arguments={'store_id': 'store_people'}),
+              event('list_store_employees', sequence=2, arguments={'store_id': 'store_river'}),
+              event('list_store_employees', sequence=3, arguments={'store_id': 'store_river', 'cursor': 'river-2'}),
+              event('list_store_employees', sequence=4, arguments={'store_id': 'store_people', 'cursor': 'people-2'})]
+    events[2] = replace(events[2], result_code='NOT_FOUND')
+    wire, page = read_wire(c), read_wire(c)
+    wire['data']['data'] = [wire['data']['data']]
+    page['data']['data'] = [{**page['data']['data'], 'id': 'other_employee'}]
+    failed = {'operation_id': None, 'data': None, 'observation': {}, 'audit': {},
+              'error': {'code': 'NOT_FOUND'}}
+    attach_read_proofs(obs, events, [wire, wire, failed, page])
+    assert 'MISSING_EVIDENCE' in codes(assert_case_postconditions(c, obs))

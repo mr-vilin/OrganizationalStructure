@@ -160,50 +160,84 @@ def _read_completion(value, expected, obs, case):
     _need(isinstance(obs.output, CapturedOutput), label='read_completion')
     trace = obs.output._run.trace
     target = expected['employee_id']
-    matched = []
-    seen = set()
+    by_sequence = {}
+    target_queries = []
+    list_tools = {'list_employees', 'list_store_employees'}
+    def query(event):
+        defaults = ({'membership': 'all', 'include_inactive': False}
+                    if event.tool_name == 'list_store_employees' else
+                    {'department_id': None, 'include_descendants': False, 'store_id': None,
+                     'primary_store_id': None, 'include_inactive': False})
+        return (event.tool_name, {k: v for k, v in {**defaults, **event.arguments}.items()
+                if k not in {'dataset_epoch', 'data_version', 'cursor', 'page_token', 'limit'}})
     for response in obs.mcp_responses:
         _need(isinstance(response, McpResponseEvidence), label='read_completion')
         event = response._event
-        # 证据必须逐次绑定可信 trace；重复 sequence 不可用于拼装成功。
-        _need(sum(e == event for e in trace) == 1 and event.sequence not in seen, label='read_completion')
-        seen.add(event.sequence)
+        # 全部历史 proof 仍必须真实且唯一地绑定可信 trace。
+        _need(sum(e == event for e in trace) == 1 and event.sequence not in by_sequence,
+              label='read_completion')
+        by_sequence[event.sequence] = response
+        if event.tool_name in list_tools and any(r.get('id') == target for r in response._employees):
+            target_queries.append(query(event))
+    related = []
+    for event in trace:
         if event.tool_name not in case.allowed_tools:
             continue
         direct = event.tool_name == 'get_employee' and event.arguments.get('employee_id') == target
-        listed = event.tool_name in {'list_employees', 'list_store_employees'}
-        rows = [r for r in response._employees if r.get('id') == target]
-        if not (direct or listed and rows) or not response._success:
-            continue
-        _need(response._valid and len(rows) == 1, label='read_completion')
-        row = rows[0]
-        _need({'id', 'primary_department_id', 'primary_store_id', 'primary_store_status', 'store_ids'} <= row.keys(),
-              label='read_completion')
-        if event.tool_name == 'list_store_employees':
-            store = event.arguments.get('store_id')
-            _need(store in expected['store_ids'] and event.arguments.get('membership', 'all') in {'all', 'primary'},
-                  'FACT_MISMATCH', 'read_completion')
-            if event.arguments.get('membership') == 'primary':
-                _need(store == expected['primary_store_id'], 'FACT_MISMATCH', 'read_completion')
-        for key in ('primary_department_id', 'primary_store_id', 'primary_store_status'):
-            _need(_same(row[key], expected[key]), 'FACT_MISMATCH', 'read_completion')
-        stores = row['store_ids']
-        _need(isinstance(stores, list) and all(type(item) is str for item in stores), label='read_completion')
-        _need(len(stores) == len(set(stores)) and set(stores) == set(expected['store_ids']),
-              'FACT_MISMATCH', 'read_completion')
-        for version_key, actual in zip(('dataset_epoch', 'data_version'), _version(obs.after)):
-            for part in (response._meta, response._observation):
-                _need(version_key in part, label='read_completion')
-                _need(_same(part[version_key], actual), 'VERSION_MISMATCH', 'read_completion')
-        _need({'execution', 'fact_quality'} <= response._observation.keys(), label='read_completion')
-        _need(response._observation['execution'] in {'submitted', 'verified'}
-              and response._observation['fact_quality'] == _terminal(obs)[1],
+        listed = event.tool_name in list_tools and query(event) in target_queries
+        if direct or listed:
+            related.append(event)
+    _need(bool(related), label='read_completion')
+    related.sort(key=lambda item: item.sequence)
+    target_reads = [item for item in related if item.sequence in by_sequence and any(
+        row.get('id') == target for row in by_sequence[item.sequence]._employees)]
+    _need(bool(target_reads), label='read_completion')
+    event = target_reads[-1]
+    # 后续成功分页可不含目标，但任何相关查询的晚失败都不能被另一组分页掩盖。
+    completion_pages = [item for item in related if item.sequence >= event.sequence]
+    for page in completion_pages:
+        proof = by_sequence.get(page.sequence)
+        _need(proof is not None and proof._valid and proof._success, label='read_completion')
+        if page.tool_name == 'get_employee' or not page.arguments.get('cursor'):
+            _need(any(row.get('id') == target for row in proof._employees), label='read_completion')
+        _need('execution' in proof._observation, label='read_completion')
+        _need(proof._observation.get('execution') in {'submitted', 'verified'},
               'TERMINAL_MISMATCH', 'read_completion')
-        # 固定预期同时再比独立DB，不能因API与一个错误预期相同而跳过真实事实。
-        for key in _READ:
-            _read_condition(key, expected[key], expected, obs)
-        matched.append(response)
-    _need(bool(matched), label='read_completion')
+        for key, actual in zip(('dataset_epoch', 'data_version'), _version(obs.after)):
+            for part in (proof._meta, proof._observation):
+                _need(key in part, label='read_completion')
+                _need(_same(part[key], actual), 'VERSION_MISMATCH', 'read_completion')
+    response = by_sequence.get(event.sequence)
+    _need(response is not None and response._success, label='read_completion')
+    rows = [r for r in response._employees if r.get('id') == target]
+    _need(response._valid and len(rows) == 1, label='read_completion')
+    row = rows[0]
+    _need({'id', 'primary_department_id', 'primary_store_id', 'primary_store_status', 'store_ids'} <= row.keys(),
+          label='read_completion')
+    if event.tool_name == 'list_store_employees':
+        store = event.arguments.get('store_id')
+        _need(store in expected['store_ids'] and event.arguments.get('membership', 'all') in {'all', 'primary'},
+              'FACT_MISMATCH', 'read_completion')
+        if event.arguments.get('membership') == 'primary':
+            _need(store == expected['primary_store_id'], 'FACT_MISMATCH', 'read_completion')
+    for key in ('primary_department_id', 'primary_store_id', 'primary_store_status'):
+        _need(_same(row[key], expected[key]), 'FACT_MISMATCH', 'read_completion')
+    stores = row['store_ids']
+    _need(isinstance(stores, list) and all(type(item) is str for item in stores), label='read_completion')
+    _need(len(stores) == len(set(stores)) and set(stores) == set(expected['store_ids']),
+          'FACT_MISMATCH', 'read_completion')
+    for version_key, actual in zip(('dataset_epoch', 'data_version'), _version(obs.after)):
+        for part in (response._meta, response._observation):
+            _need(version_key in part, label='read_completion')
+            _need(_same(part[version_key], actual), 'VERSION_MISMATCH', 'read_completion')
+    _need({'execution', 'fact_quality'} <= response._observation.keys(), label='read_completion')
+    _need(response._observation['execution'] in {'submitted', 'verified'}
+          and response._observation['fact_quality'] == _terminal(obs)[1],
+          'TERMINAL_MISMATCH', 'read_completion')
+    # 固定预期同时再比独立DB，不能因API与一个错误预期相同而跳过真实事实。
+    for key in _READ:
+        _read_condition(key, expected[key], expected, obs)
+
 
 
 def _row_conditions(value, obs):
