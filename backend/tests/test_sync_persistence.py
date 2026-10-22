@@ -88,8 +88,9 @@ def test_oauth_state_single_use_bound_to_browser_and_identity(sessions):
     service=OAuthService(sessions, settings, API())
     state=service.begin()
     with pytest.raises(ValueError): service.complete(state, 'wrong', 'code')
-    session, csrf=service.complete(state, state, 'code')
+    session, csrf, token=service.complete(state, state, 'code')
     assert session.open_id == 'ou' and csrf
+    assert token != session.token_digest
     with pytest.raises(ValueError): service.complete(state, state, 'code')
 
 

@@ -5,6 +5,7 @@ import sys
 from uuid import uuid4
 
 import pytest
+import hashlib
 from sqlalchemy import event, select
 
 from app.persistence.models import AdminAllowlist, AdminSession, ApiClient, ChangeLog, DatasetState, EventInbox, OAuthState, SyncJob, WorkerLease
@@ -18,7 +19,7 @@ def seed_credentials(sessions):
     now = datetime(2026, 9, 15)
     with sessions.begin() as db:
         old_epoch = db.get(DatasetState, 1).dataset_epoch
-        db.add(AdminSession(id=token, open_id='ou_restore', csrf_hash='x' * 64,
+        db.add(AdminSession(id='internal-restore', token_digest=hashlib.sha256(token.encode()).hexdigest(), open_id='ou_restore', csrf_hash='x' * 64,
                             expires_at=now + timedelta(days=1)))
         db.add(ApiClient(id=token, name='恢复测试', secret_hash='x' * 64, created_at=now))
     return token, old_epoch
@@ -44,7 +45,7 @@ def test_restore_requires_new_epoch_initialization_and_new_credentials(mysql_ses
         assert state.data_version == 0
         assert state.coverage_status == 'unknown'
         assert state.last_full_sync_at is None
-        assert db.get(AdminSession, token).revoked_at is not None
+        assert db.get(AdminSession, 'internal-restore').revoked_at is not None
         assert db.get(ApiClient, token).revoked_at is not None
         assert db.get(AdminAllowlist, recovery_admin) is not None
         assert db.get(OAuthState, token) is None
@@ -72,5 +73,5 @@ def test_recovery_audit_failure_rolls_back_epoch_and_revocations(mysql_sessions)
         event.remove(mysql_sessions.class_, 'before_flush', fail_audit)
     with mysql_sessions() as db:
         assert db.get(DatasetState, 1).dataset_epoch == old_epoch
-        assert db.get(AdminSession, token).revoked_at is None
+        assert db.get(AdminSession, 'internal-restore').revoked_at is None
         assert db.get(ApiClient, token).revoked_at is None

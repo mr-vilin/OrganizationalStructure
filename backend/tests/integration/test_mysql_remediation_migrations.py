@@ -1,0 +1,129 @@
+"""仅对显式提供的独立 MySQL 8.4 测试实例创建可丢弃随机库。"""
+from io import StringIO
+import hashlib
+import os
+from pathlib import Path
+from uuid import uuid4
+
+from alembic import command
+from alembic.config import Config
+import pytest
+from sqlalchemy import event, text
+from sqlalchemy.engine import make_url
+
+from app.persistence.database import create_mysql_engine, database_ready, schema_snapshot, session_factory
+from app.persistence.repositories import SqlIdentityRepository
+from app.persistence.schema_check import check_schema
+
+
+@pytest.fixture
+def migration_database(monkeypatch):
+    source = os.getenv('ORG_MIGRATION_TEST_DATABASE_URL')
+    if not source:
+        pytest.skip('未提供独立 ORG_MIGRATION_TEST_DATABASE_URL；MySQL 迁移演练未执行')
+    url = make_url(source)
+    if url.drivername != 'mysql+pymysql' or url.host not in {'127.0.0.1', 'localhost'} or not (url.database or '').endswith('_test'):
+        pytest.fail('迁移演练只允许本机、库名以 _test 结尾的独立 MySQL 实例')
+    admin = create_mysql_engine(source)
+    name = 'tmp_org_' + uuid4().hex[:12] + '_test'
+    created = False
+    engine = None
+    try:
+        with admin.connect() as connection:
+            assert connection.execute(text('SELECT VERSION()')).scalar_one().startswith('8.4.')
+            connection.execute(text(f'CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs'))
+            created = True
+        target = url.set(database=name).render_as_string(hide_password=False)
+        monkeypatch.setenv('ORG_DATABASE_URL', target)
+        engine = create_mysql_engine(target)
+        config = Config(str(Path(__file__).parents[2] / 'alembic.ini'))
+        config.set_main_option('script_location', str(Path(__file__).parents[2] / 'migrations'))
+        yield engine, config
+    finally:
+        if engine is not None:
+            engine.dispose()
+        if created:
+            with admin.connect() as connection:
+                connection.execute(text(f'DROP DATABASE `{name}`'))
+        admin.dispose()
+
+
+def test_mysql_comment_roundtrip_and_full_alignment(migration_database):
+    engine, config = migration_database
+    command.upgrade(config, '0005_sync_job_ledger')
+    before = schema_snapshot(engine)
+    command.upgrade(config, '0006_column_comments')
+    command.downgrade(config, '0005_sync_job_ledger')
+    assert schema_snapshot(engine) == before
+    command.upgrade(config, 'head')
+    assert check_schema(engine)['errors'] == []
+    assert database_ready(engine)['schema'] == 'ready'
+    engine.dispose()  # 强制重连，验证新连接同样配置会话参数。
+    assert check_schema(engine)['errors'] == []
+
+
+@pytest.mark.parametrize('checkpoint', ['ADD COLUMN token_digest', 'MODIFY token_digest', 'CREATE UNIQUE INDEX'])
+def test_mysql_session_migration_retry_revokes_old_tokens(migration_database, checkpoint):
+    from datetime import datetime
+
+    engine, config = migration_database
+    command.upgrade(config, '0007_schema_alignment')
+    legacy_token = 'synthetic-legacy-cookie-for-migration'
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO admin_allowlist(open_id, created_at) VALUES ('ou_test', UTC_TIMESTAMP())"))
+        connection.execute(text('''INSERT INTO admin_session(id, open_id, csrf_hash, expires_at)
+            VALUES (:token, 'ou_test', 'synthetic-csrf', '2099-01-01')'''), {'token': legacy_token})
+    # 在已提交 DDL 之后失败，再使用原迁移重跑，覆盖 MySQL DDL 隐式提交边界。
+    def interrupt(connection, cursor, statement, parameters, context, executemany):
+        if checkpoint in statement:
+            raise RuntimeError('injected migration interruption')
+    from sqlalchemy.engine import Engine
+    event.listen(Engine, 'after_cursor_execute', interrupt)
+    try:
+        with pytest.raises(RuntimeError, match='injected migration interruption'):
+            command.upgrade(config, 'head')
+    finally:
+        event.remove(Engine, 'after_cursor_execute', interrupt)
+    command.upgrade(config, 'head')
+    assert check_schema(engine)['errors'] == []
+    with engine.connect() as connection:
+        rows = connection.execute(text('SELECT id, token_digest, revoked_at FROM admin_session')).all()
+        assert len(rows) == 1
+        assert rows[0].id != legacy_token
+        assert rows[0].token_digest == hashlib.sha256(legacy_token.encode()).hexdigest()
+        assert rows[0].revoked_at is not None
+    repository = SqlIdentityRepository(session_factory(engine), 's' * 32)
+    assert repository.authenticate_session(legacy_token, datetime.utcnow()) is None
+    assert repository.authenticate_session(rows[0].token_digest, datetime.utcnow()) is None
+
+
+def test_mysql_collation_conflict_stops_before_any_alignment_ddl(migration_database):
+    engine, config = migration_database
+    command.upgrade(config, '0006_column_comments')
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO pending_fact(object_type,source_id,normalized_data,error_code,updated_at) VALUES ('type','same','{}','test',UTC_TIMESTAMP()), ('type ','same','{}','test',UTC_TIMESTAMP())"))
+    before = schema_snapshot(engine)
+    with pytest.raises(RuntimeError, match='唯一键冲突'):
+        command.upgrade(config, '0007_schema_alignment')
+    assert schema_snapshot(engine) == before
+
+
+def test_mysql_offline_new_database_matches_online_target(migration_database):
+    engine, config = migration_database
+    output = StringIO()
+    config.output_buffer = output
+    command.upgrade(config, 'head', sql=True)
+    # 本项目迁移无存储过程或含分号的字面值，按语句执行生成包。
+    with engine.begin() as connection:
+        for statement in output.getvalue().split(';'):
+            if statement.strip():
+                connection.exec_driver_sql(statement)
+    assert check_schema(engine)['errors'] == []
+
+
+def test_mysql_schema_check_rejects_prefix_unique_index(migration_database):
+    engine, config = migration_database
+    command.upgrade(config, 'head')
+    with engine.begin() as connection:
+        connection.execute(text('ALTER TABLE admin_session DROP INDEX uq_admin_session_token_digest, ADD UNIQUE INDEX uq_admin_session_token_digest(token_digest(16))'))
+    assert 'admin_session.index_definition.uq_admin_session_token_digest' in check_schema(engine)['errors']

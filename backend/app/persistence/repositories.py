@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import and_, or_, select
@@ -8,6 +9,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from .models import AdminAllowlist, AdminSession, ApiClient, ChangeLog, DatasetState, SyncJob, SystemSetting, LoginIdentity, Employee
+
+
+@dataclass(frozen=True)
+class IssuedSession:
+    record: AdminSession
+    token: str
 
 
 class SqlIdentityRepository:
@@ -24,25 +31,32 @@ class SqlIdentityRepository:
                 return None
             return record if hmac.compare_digest(record.secret_hash, self._hash(secret)) else None
 
-    def authenticate_session(self, session_id: str, now: datetime) -> AdminSession | None:
+    def authenticate_session(self, session_token: str, now: datetime) -> AdminSession | None:
         with self._sessions() as db:
-            return db.scalar(self.session_auth_statement(session_id, now))
+            return db.scalar(self.session_auth_statement(self._session_digest(session_token), now))
 
     @staticmethod
-    def session_auth_statement(session_id: str, now: datetime):
+    def session_auth_statement(token_digest: str, now: datetime):
         inactive = select(LoginIdentity.open_id).join(Employee,Employee.feishu_user_id==LoginIdentity.user_id).where(LoginIdentity.open_id==AdminSession.open_id,Employee.status=='inactive').exists()
         return select(AdminSession).join(
             AdminAllowlist, AdminAllowlist.open_id == AdminSession.open_id
-        ).where(AdminSession.id == session_id, AdminSession.revoked_at.is_(None), AdminSession.expires_at > now, ~inactive)
+        ).where(AdminSession.token_digest == token_digest, AdminSession.revoked_at.is_(None), AdminSession.expires_at > now, ~inactive)
 
-    def create_session(self, open_id: str, csrf_token: str, expires_at: datetime, now: datetime) -> AdminSession | None:
+    def create_session(self, open_id: str, csrf_token: str, expires_at: datetime, now: datetime) -> IssuedSession | None:
         """供 OAuth 适配器在换取并核实 open_id 后建立可撤销会话。"""
         with self._sessions.begin() as db:
             if db.get(AdminAllowlist, open_id) is None:
                 return None
-            record = AdminSession(id=secrets.token_urlsafe(32), open_id=open_id, csrf_hash=self._hmac(csrf_token), expires_at=expires_at)
+            token = secrets.token_urlsafe(32)
+            record = AdminSession(
+                id=secrets.token_urlsafe(16),
+                token_digest=self._session_digest(token),
+                open_id=open_id,
+                csrf_hash=self._hmac(csrf_token),
+                expires_at=expires_at,
+            )
             db.add(record)
-            return record
+            return IssuedSession(record=record, token=token)
 
     def revoke_session(self, session_id: str, now: datetime) -> bool:
         with self._sessions.begin() as db:
@@ -133,6 +147,10 @@ class SqlIdentityRepository:
 
     def _hmac(self, value: str) -> str:
         return hmac.new(self._pepper, value.encode(), hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _session_digest(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
 
 
 class SqlSyncJobRepository:

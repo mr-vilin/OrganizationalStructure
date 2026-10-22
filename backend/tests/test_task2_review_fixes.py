@@ -1,4 +1,5 @@
 import json
+import hashlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import pytest
@@ -24,7 +25,7 @@ def seed_admin(sessions,status='active'):
         db.add(AdminAllowlist(open_id='ou',created_at=datetime.now()))
         db.add(LoginIdentity(open_id='ou',user_id='u',tenant_key='t'))
         db.add(Employee(id='u',feishu_user_id='u',name='员工',status=status,sync_quality='complete'))
-        db.add(AdminSession(id='session',open_id='ou',csrf_hash='hash',expires_at=datetime.now()+timedelta(days=1)))
+        db.add(AdminSession(id='session',token_digest=hashlib.sha256(b'session').hexdigest(),open_id='ou',csrf_hash='hash',expires_at=datetime.now()+timedelta(days=1)))
 
 
 def test_oauth_binding_mismatch_preserves_mapping_and_commits_safe_audit(sessions):

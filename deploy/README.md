@@ -1,5 +1,7 @@
 # 部署说明
 
+数据库 `0006—0008` 整改的预检、隔离演练、执行和恢复步骤见 [数据库整改执行包](../docs/database-remediation-runbook-2026-10-22.md)。生成迁移不代表已执行；摘要迁移后所有管理员必须重新登录。
+
 ## 准备配置
 
 在项目根目录将 `.env.example` 复制为 `.env`，填写随机数据库密码、至少 32 字符的会话密钥、飞书企业自建应用信息和同应用初始管理员 `open_id`。数据库 URL 的密码与 `MYSQL_PASSWORD` 一致。部署地址需要 HTTPS，登录回调固定为 `/admin/auth/callback`。
@@ -78,7 +80,7 @@ mkdir -p backups/pre-restore
 docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction --routines --triggers --events --set-gtid-purged=OFF --no-tablespaces organization' > "backups/pre-restore/organization-$(date +%Y%m%d-%H%M%S).sql"
 
 # 4. 覆盖操作：仅在恢复责任人确认目标库为 organization 且上一步现状备份成功后，清空并重建目标库
-docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -e "DROP DATABASE IF EXISTS organization; CREATE DATABASE organization CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"'
+ docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -e "DROP DATABASE IF EXISTS organization; CREATE DATABASE organization CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"'
 
 # 5. 导入已确认的 MySQL 备份
 docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot organization' < "$BACKUP_FILE"

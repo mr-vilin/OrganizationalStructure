@@ -10,7 +10,7 @@ services:
       MYSQL_USER: organization
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请配置 MYSQL_PASSWORD}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请配置 MYSQL_ROOT_PASSWORD}
-    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_as_cs"]
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci"]
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:

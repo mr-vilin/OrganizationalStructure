@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from .config import Settings, get_settings
 from .dependencies import Runtime, get_admin_identity, get_public_identity, get_read_service, get_runtime, require_admin_write
-from .persistence.database import database_ready
+from .persistence.database import DatabaseReadinessError, database_ready
 from .services import ReadService
 from .admin.router import router as admin_router
 
@@ -72,12 +72,12 @@ def ready(runtime: Runtime | None = Depends(get_runtime)):
     if runtime is None:
         raise HTTPException(503, {"code": "DATABASE_NOT_CONFIGURED", "message": "数据库尚未配置"})
     try:
-        database_ready(runtime.engine)
-        settings = get_settings()
-        runtime.identities.initialize_allowlist_once(settings.admin_open_ids, datetime.utcnow())
+        report = database_ready(runtime.engine)
+    except DatabaseReadinessError as exc:
+        raise HTTPException(503, {"code": exc.code, "message": exc.message})
     except Exception:
         raise HTTPException(503, {"code": "DATABASE_UNAVAILABLE", "message": "数据库不可用"})
-    return {"data": {"database": "ready", "schema": "reachable"}, "meta": {}}
+    return {"data": report | {"initialization": "independent"}, "meta": {}}
 
 
 @app.get("/admin/auth/login")
@@ -104,9 +104,9 @@ def oauth_callback(code: str | None = None, state: str | None = None, org_oauth_
         return error('IDENTITY_NOT_CONFIGURED','飞书登录尚未配置',503)
     try:
         if not code: raise ValueError('OAUTH_CODE_MISSING')
-        session,csrf=OAuthService(runtime.sessions,settings,FeishuClient(settings.feishu_app_id,settings.feishu_app_secret.get_secret_value())).complete(state,org_oauth_state,code)
+        session,csrf,session_token=OAuthService(runtime.sessions,settings,FeishuClient(settings.feishu_app_id,settings.feishu_app_secret.get_secret_value())).complete(state,org_oauth_state,code)
         response=RedirectResponse('/organization',status_code=302)
-        response.set_cookie('org_session',session.id,max_age=43200,httponly=True,secure=True,samesite='lax')
+        response.set_cookie('org_session',session_token,max_age=43200,httponly=True,secure=True,samesite='lax')
         response.set_cookie('org_csrf',csrf,max_age=43200,httponly=True,secure=True,samesite='strict',path='/admin/auth')
     except ValueError as exc:
         response=error(str(exc) if str(exc) in {'OAUTH_CODE_MISSING','OAUTH_STATE_INVALID','OAUTH_IDENTITY_MISMATCH','ADMIN_NOT_ALLOWED','LOGIN_IDENTITY_MISMATCH','EMPLOYEE_INACTIVE'} else 'OAUTH_FAILED','登录校验失败，请重新发起登录',403)

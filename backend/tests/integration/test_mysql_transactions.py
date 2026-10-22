@@ -17,11 +17,11 @@ def test_admin_removal_preserves_revoked_session_and_denies_authentication(mysql
     open_id = 'ou_test_' + uuid4().hex
     identity.add_admin(open_id, 'integration', now)
     issued = identity.create_session(open_id, 'csrf', now + timedelta(hours=1), now)
-    assert identity.authenticate_session(issued.id, now).open_id == open_id
+    assert identity.authenticate_session(issued.token, now).open_id == open_id
     identity.remove_admin(open_id, 'integration', now)
-    assert identity.authenticate_session(issued.id, now) is None
+    assert identity.authenticate_session(issued.token, now) is None
     with mysql_sessions() as db:
-        assert db.get(AdminSession, issued.id).revoked_at == now
+        assert db.get(AdminSession, issued.record.id).revoked_at == now
 
 
 def test_failed_rotation_rolls_back_revocation_and_audit(mysql_sessions):
