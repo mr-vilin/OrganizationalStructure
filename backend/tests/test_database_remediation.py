@@ -1,30 +1,17 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine, event, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy.pool import StaticPool
 
 from app.persistence.models import AdminAllowlist, Base
 from app.persistence.repositories import SqlIdentityRepository
+from db_fixtures import create_sqlite_sessions
 
 
 def _sessions():
-    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
-
-    @event.listens_for(engine, "connect")
-    def configure(connection, _):
-        connection.create_collation("utf8mb4_bin", lambda left, right: (left > right) - (left < right))
-        connection.execute("PRAGMA foreign_keys=ON")
-
-    Base.metadata.create_all(engine)
-    with engine.begin() as connection:
-        connection.execute(text("INSERT INTO dataset_state VALUES (1, 'pending', 0, 'pending', 'unknown', NULL)"))
-        connection.execute(text("INSERT INTO system_setting VALUES ('task_queue_lock', '1')"))
-        connection.execute(text("INSERT INTO worker_lease VALUES (1, NULL, 0, NULL)"))
-    return engine, sessionmaker(engine, expire_on_commit=False)
+    return create_sqlite_sessions(seed_worker_lease=True)
 
 
 def test_session_cookie_is_sha256_digest_lookup_and_digest_is_not_a_valid_cookie():

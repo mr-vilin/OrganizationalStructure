@@ -48,6 +48,8 @@ if ($LASTEXITCODE -ne 0) { throw '结构验收失败，保持应用停写' }
 `compose.mysql-test.yaml` 使用独立 Compose 项目、13308 端口、公开测试密码和 tmpfs；不挂载业务数据库卷。以下仅针对该可丢弃实例。迁移测试另用随机 `tmp_org_*_test` 库，退出时只删除本次创建的库。
 
 ```powershell
+../scripts/check-environment.ps1 -DatabaseIntegration
+if ($LASTEXITCODE -ne 0) { throw '数据库集成环境未就绪' }
 docker compose -f compose.mysql-test.yaml up -d --wait
 if ($LASTEXITCODE -ne 0) { throw '隔离 MySQL 未就绪' }
 $env:ORG_MIGRATION_TEST_DATABASE_URL = 'mysql+pymysql://root:isolated-test-only@127.0.0.1:13308/organization_remediation_test'
@@ -60,7 +62,7 @@ try {
     ./.venv/Scripts/python.exe -m alembic upgrade head
     if ($LASTEXITCODE -ne 0) { throw '测试库迁移失败' }
     $env:ORG_TEST_DATABASE_URL = $env:ORG_MIGRATION_TEST_DATABASE_URL
-    ./.venv/Scripts/python.exe -m pytest tests/integration -q -p no:cacheprovider
+    ./.venv/Scripts/python.exe -m pytest tests/integration -q -p no:cacheprovider --require-mysql
     if ($LASTEXITCODE -ne 0) { throw 'MySQL 集成验收失败' }
 } finally {
     Pop-Location

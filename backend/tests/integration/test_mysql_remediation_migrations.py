@@ -1,51 +1,14 @@
 """仅对显式提供的独立 MySQL 8.4 测试实例创建可丢弃随机库。"""
 from io import StringIO
 import hashlib
-import os
-from pathlib import Path
-from uuid import uuid4
 
 from alembic import command
-from alembic.config import Config
 import pytest
 from sqlalchemy import event, text
-from sqlalchemy.engine import make_url
 
-from app.persistence.database import create_mysql_engine, database_ready, schema_snapshot, session_factory
+from app.persistence.database import database_ready, schema_snapshot, session_factory
 from app.persistence.repositories import SqlIdentityRepository
 from app.persistence.schema_check import check_schema
-
-
-@pytest.fixture
-def migration_database(monkeypatch):
-    source = os.getenv('ORG_MIGRATION_TEST_DATABASE_URL')
-    if not source:
-        pytest.skip('未提供独立 ORG_MIGRATION_TEST_DATABASE_URL；MySQL 迁移演练未执行')
-    url = make_url(source)
-    if url.drivername != 'mysql+pymysql' or url.host not in {'127.0.0.1', 'localhost'} or not (url.database or '').endswith('_test'):
-        pytest.fail('迁移演练只允许本机、库名以 _test 结尾的独立 MySQL 实例')
-    admin = create_mysql_engine(source)
-    name = 'tmp_org_' + uuid4().hex[:12] + '_test'
-    created = False
-    engine = None
-    try:
-        with admin.connect() as connection:
-            assert connection.execute(text('SELECT VERSION()')).scalar_one().startswith('8.4.')
-            connection.execute(text(f'CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs'))
-            created = True
-        target = url.set(database=name).render_as_string(hide_password=False)
-        monkeypatch.setenv('ORG_DATABASE_URL', target)
-        engine = create_mysql_engine(target)
-        config = Config(str(Path(__file__).parents[2] / 'alembic.ini'))
-        config.set_main_option('script_location', str(Path(__file__).parents[2] / 'migrations'))
-        yield engine, config
-    finally:
-        if engine is not None:
-            engine.dispose()
-        if created:
-            with admin.connect() as connection:
-                connection.execute(text(f'DROP DATABASE `{name}`'))
-        admin.dispose()
 
 
 def test_mysql_comment_roundtrip_and_full_alignment(migration_database):
