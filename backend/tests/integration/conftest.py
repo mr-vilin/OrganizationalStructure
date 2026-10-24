@@ -81,3 +81,17 @@ def migration_database(request, monkeypatch):
             with admin.connect() as connection:
                 connection.execute(text(f'DROP DATABASE `{name}`'))
         admin.dispose()
+
+
+@pytest.fixture
+def evaluation_mysql_database(request):
+    """Evaluation 专用独立连接/串行 reset；不改变 mysql_sessions 的回滚语义。"""
+    from app.evaluation.fixtures import evaluation_database
+
+    url = os.environ.get('ORG_TEST_DATABASE_URL')
+    if not url:
+        if request.config.getoption('--require-mysql'):
+            pytest.fail('未提供 ORG_TEST_DATABASE_URL；--require-mysql 要求 Evaluation 验收')
+        pytest.skip('未提供 ORG_TEST_DATABASE_URL；Evaluation 真实 MySQL 验收尚未执行')
+    with evaluation_database(url) as sessions:
+        yield sessions

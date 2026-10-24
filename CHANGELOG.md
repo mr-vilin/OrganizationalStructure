@@ -10,6 +10,32 @@
 4. 纯文档、测试或依赖维护如果不改变产品行为，也要在 PR 中明确写出“无产品版本变化”，无需递增产品版本。
 5. 每条记录保留迁移、回滚、验证结果和关联提交/PR，历史记录只追加，不覆盖。
 
+## v2.8.63 — 2026-10-24
+
+### 变更
+
+- 合入独立 Agent 能力、操作回执、观察层和 15 个官方 MCP 工具，包含受控门店写入、同步申请、版本/幂等保护及生产人工确认。
+- 接入可选私网 MCP sidecar；本机客户端通过受信 Docker stdio 入口连接，保留令牌隔离及 Host/Origin 防护。
+- 合入六场景确定性 Evaluation 与通用 CI CLI，规则 Judge 默认启用，可选模型 Judge 默认关闭。
+- 保留主分支数据库整改、管理员会话摘要及只读就绪检查；统一迁移为 `0009_operation_receipt`，app/migrate/mcp 使用同一镜像。
+- 同步产品版本页和部署文档。影响范围为本机部署与 Agent 开放能力；前端构建与路由体系不变。
+
+### 迁移与回滚
+
+- 本机 MySQL 已执行 `0008_session_digest → 0009_operation_receipt`，仅新增 19 列操作回执表；沿用 general_ci，稳定 ID 为 utf8mb4_bin。迁移后原 21 表结构和全部行指纹一致。
+- 已完成 DPAPI 加密备份、恢复副本比对和副本升级验证；保留加密备份及原镜像。失败恢复和回执保留边界见 [MCP 整合验收记录](./docs/mcp-integration-acceptance-2026-10-24.md)。
+
+### 验证
+
+- 完整后端/部署回归：1326 passed、0 failed、0 skipped；stdio 增量回归 22 passed（与全量有重叠，不相加）。
+- 前端版本页测试与 TypeScript/Vite 构建通过，Ant Design lint 0 issues。
+- 实际本机 app/mysql/mcp 均 healthy；官方 HTTP/stdio 客户端的 legacy/auto 模式均完成工具发现、实际后台读取与人工拒绝验证。实际页面产物为 v2.8.63，未认证管理/内部接口均 401。
+- 未运行真实模型，未批准真实业务写入；企业飞书覆盖与 HTTPS 登录不在本次验收内。
+
+### 关联提交 / PR
+
+- 本地合并 `codex/agent-native-impl`（`35bd406`）与主分支 `2bd04a5`；本条随合并提交记录。未推送或创建 PR。
+
 ## v2.8.62 — 2026-10-10
 
 ### 变更

@@ -2,8 +2,8 @@ import { BranchesOutlined, CheckCircleOutlined, CodeOutlined, DatabaseOutlined, 
 import { Alert, Card, Col, Descriptions, Divider, Row, Space, Tag, Timeline, Typography } from 'antd';
 import { PageHeader } from '../components/PageHeader';
 
-const productVersion = 'v2.8.62';
-const releaseDate = '2026-10-10';
+const productVersion = 'v2.8.63';
+const releaseDate = '2026-10-24';
 const changelogUrl = 'https://github.com/mr-vilin/OrganizationalStructure/blob/main/CHANGELOG.md';
 
 const architecture = [
@@ -18,7 +18,7 @@ const featureGroups = [
 ];
 
 const releaseTimeline = [
-  { version: productVersion, date: releaseDate, label: '当前产品版本', description: '系统信息页、产品版本台账和合并前版本记录规则落地。' },
+  { version: productVersion, date: releaseDate, label: '当前产品版本', description: '整合 MCP、受控 Agent 能力与评测入口，保留数据库结构及会话安全修复。' },
   { version: 'v1.0', date: '2026-09-15', label: '首版基线', description: '完成组织架构、门店管理、同步中心、变更日志和管理设置的首版交付。' },
 ];
 

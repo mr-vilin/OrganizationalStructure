@@ -1,0 +1,45 @@
+schema_version: 1
+case_id: ORG_AGENT_READ_NOT_IN_STORE
+goal: 查询合成员工 eval_employee_hq 的全部门店归属、主部门、主门店及状态；主部门为总部时，不能把兼职门店提升为主门店。
+fixture:
+  dataset_state:
+    id: 1
+    dataset_epoch: test-eval-not-in-store
+    data_version: 1
+    initialization_status: complete
+    coverage_status: complete
+  departments:
+    - {id: hq, feishu_department_id: hq, parent_id: null, name: 测试总部, status: active, sync_quality: complete, is_virtual_root: false}
+    - {id: store_people, feishu_department_id: store_people, parent_id: hq, name: 测试人民店, status: active, sync_quality: complete, is_virtual_root: false}
+  employees:
+    - {id: eval_employee_hq, feishu_user_id: eval_employee_hq, name: 测试员工乙, status: active, sync_quality: complete, primary_department_id: hq, primary_store_status: not_in_store}
+  # 兼职门店在前；主部门明确为总部。
+  employee_departments:
+    - {employee_id: eval_employee_hq, department_id: store_people, is_primary: false, active: true}
+    - {employee_id: eval_employee_hq, department_id: hq, is_primary: true, active: true}
+  store_profiles:
+    - {department_id: store_people, is_store: true, store_code: EVAL_PEOPLE, notes: 合成评测门店}
+  employee_stores:
+    - {employee_id: eval_employee_hq, store_id: store_people, is_primary: false, path: [store_people]}
+  system_settings:
+    - {key: reconcile_schedule, value: '{"enabled": false, "local_time": "03:00", "timezone": "Asia/Shanghai", "updated_at": null}'}
+  fake_feishu:
+    scenario_id: ORG_AGENT_READ_NOT_IN_STORE
+    responses: []
+allowed_tools: [get_employee, get_department, list_stores, get_store, list_store_employees]
+expected_state:
+  read_completion: {predicate: employee_attribution}
+  employee_id: eval_employee_hq
+  primary_department_id: hq
+  primary_store_id: null
+  primary_store_status: not_in_store
+  store_ids: [store_people]
+forbidden_effects:
+  - {predicate: business_tables_unchanged}
+  - {predicate: data_version_unchanged}
+  - {predicate: no_new_operation_receipts}
+  - {predicate: no_new_sync_jobs}
+  - {predicate: no_new_change_logs}
+  - {predicate: no_feishu_writes}
+timeout_seconds: 30
+max_tool_calls: 10

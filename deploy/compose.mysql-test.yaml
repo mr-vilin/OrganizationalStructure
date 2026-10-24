@@ -9,7 +9,7 @@ services:
       MYSQL_ROOT_PASSWORD: local-root-integration-only
     ports:
       - "127.0.0.1:13306:3306"
-    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_as_cs"]
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci"]
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
       interval: 5s

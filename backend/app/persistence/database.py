@@ -2,13 +2,13 @@ from collections.abc import Iterator
 
 from dataclasses import dataclass
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from .models import Base
 
 
-CURRENT_SCHEMA_HEAD = "0008_session_digest"
+CURRENT_SCHEMA_HEAD = "0009_operation_receipt"
 REQUIRED_COLUMNS = {table.name: set(table.columns.keys()) for table in Base.metadata.tables.values()}
 
 
@@ -32,8 +32,6 @@ def create_mysql_engine(database_url: str) -> Engine:
         hide_parameters=True,
         connect_args={"charset": "utf8mb4"},
     )
-
-    from sqlalchemy import event
 
     @event.listens_for(engine, "connect")
     def configure_session(connection, _):

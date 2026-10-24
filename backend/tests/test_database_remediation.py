@@ -53,9 +53,9 @@ def test_database_ready_is_read_only_and_requires_the_supported_schema_head():
     try:
         with engine.begin() as connection:
             connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('0008_session_digest')"))
+            connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('0009_operation_receipt')"))
 
-        report = database_ready(engine, expected_head="0008_session_digest")
+        report = database_ready(engine, expected_head="0009_operation_receipt")
 
         assert report == {"database": "ready", "schema": "ready"}
     finally:
@@ -69,11 +69,11 @@ def test_schema_snapshot_exposes_columns_comments_defaults_collations_and_constr
     try:
         with engine.begin() as connection:
             connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('0008_session_digest')"))
+            connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('0009_operation_receipt')"))
 
         snapshot = schema_snapshot(engine)
 
-        assert snapshot["versions"] == ["0008_session_digest"]
+        assert snapshot["versions"] == ["0009_operation_receipt"]
         assert "token_digest" in {column["name"] for column in snapshot["tables"]["admin_session"]["columns"]}
         assert {"columns", "indexes", "foreign_keys", "comment"} <= set(snapshot["tables"]["admin_session"])
     finally:
@@ -119,7 +119,7 @@ def test_readiness_rejects_incomplete_schema_without_writing(damage):
     engine, _ = _sessions()
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-        connection.execute(text("INSERT INTO alembic_version VALUES ('0008_session_digest')"))
+        connection.execute(text("INSERT INTO alembic_version VALUES ('0009_operation_receipt')"))
         connection.execute(text(damage))
         connection.execute(text("PRAGMA query_only=ON"))
     app.dependency_overrides[get_runtime] = lambda: SimpleNamespace(engine=engine)
@@ -183,7 +183,7 @@ def test_structure_check_detects_missing_index_and_unknown_revision():
     try:
         with engine.begin() as connection:
             connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            connection.execute(text("INSERT INTO alembic_version VALUES ('0008_session_digest')"))
+            connection.execute(text("INSERT INTO alembic_version VALUES ('0009_operation_receipt')"))
         assert check_schema(engine)['errors'] == []
         with engine.begin() as connection:
             connection.execute(text('DROP INDEX ix_admin_session_open_id'))

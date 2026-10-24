@@ -1,7 +1,7 @@
 # 飞书组织架构维护系统
 
-> 产品版本：v2.8.62 · 日期：2026-10-10
-> 状态：首版代码与代码审查完成；真实 MySQL 和飞书企业环境尚未联调，未部署。
+> 产品版本：v2.8.63 · 日期：2026-10-24
+> 状态：MCP 已整合到本地主分支并完成本机容器与 stdio 客户端验收；真实模型与企业飞书另行验收。
 
 一个独立部署的内部组织服务：同步一家企业的飞书部门、人员和部门归属，在本地标记门店，为管理员提供管理页面，为其他独立业务系统提供只读 API。
 
@@ -15,16 +15,23 @@
 
 ## 开发与运行
 
+- [MCP 本机整合与验收](./docs/mcp-integration-acceptance-2026-10-24.md)：受控能力、可选侧车及本机 stdio 客户端接入。
+
 - [后端 HTTP 契约](./docs/backend-api.md)
 - [管理端启动与操作](./docs/frontend-guide.md)
 - [部署、备份与恢复](./deploy/README.md)
 - [运行与验收台账](./docs/运行与验收.md)
+- [能力回执、内部鉴权与 MySQL 验收记录](./docs/运行与验收.md#能力与观察层验收2026-10-15)
+- [Agent Evaluation 安全命令与六场景验收](./docs/运行与验收.md#agent-evaluation-测试迁移与命令)
+- [Agent 能力、观察与评测 ADR 及完整实施裁决](./docs/adr/0002-agent-native-capability-evaluation.md)
 - [分任务进度与审查](./docs/superpowers/progress.md)
 - [产品版本记录](./CHANGELOG.md)
 
-当前按用户要求先完成代码，数据库环境稍后提供。开发前端不会自动登录或填充业务数据；未连接后端时显示明确的错误与重试入口。
+当前主分支包含 Agent 能力、独立 MCP 适配层与确定性 Evaluation；当前迁移为 `0009_operation_receipt`，数据库与会话采用 `general_ci`，稳定 ID 保留 `utf8mb4_bin`。开发前端不会自动登录或填充业务数据；未连接后端时显示明确的错误与重试入口。
 
-最终验证：后端 95 项、前端 25 项、部署侧 5 项通过；前端生产构建、Ant Design 检查与离线迁移 SQL 生成通过。6 项真实 MySQL 测试因环境未提供而跳过。[整体代码审查](./docs/superpowers/final-review.md)已通过；实际企业接入、数据库并发/恢复和容器部署仍按验收台账后续执行。
+首版历史验证：后端 95 项、前端 25 项、部署侧 5 项通过；前端生产构建、Ant Design 检查与离线迁移 SQL 生成通过，当时 6 项 MySQL 测试跳过。[首版整体代码审查](./docs/superpowers/final-review.md)记录原基线。当前实际 MySQL、MCP 与六场景连续评测的结果见[最新运行台账](./docs/运行与验收.md)，不能与首版历史数字混作同一次验收。
+
+六场景使用 ScriptedWorker 与 Fake Feishu，经官方 MCP Client/Server、受保护内部 HTTP、生产同步 Worker 和真实 MySQL 运行；这验证协议、业务事实与 CI 隔离。ProviderWorker 提供显式模型注入协议，尚未用真实模型或企业飞书验收。规则软评分和默认关闭的可选 LLM Judge 只作诊断，确定性硬门槛决定通过与退出码。普通 CI 不调用真实飞书或生产模型。
 
 ## 阅读顺序
 

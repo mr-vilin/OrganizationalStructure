@@ -256,3 +256,81 @@ class ChangeLog(Base):
     after_data: Mapped[dict | None] = mapped_column(JSON, comment="变更后数据")
     committed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, comment="变更提交时间")
     __table_args__ = _table_args("数据变更审计日志")
+
+
+class OperationReceipt(Base):
+    """Agent 能力调用的一次操作回执。"""
+
+    __tablename__ = "operation_receipt"
+    operation_id: Mapped[str] = mapped_column(
+        SOURCE_ID, primary_key=True, comment="Agent 能力调用的一次操作稳定标识"
+    )
+    idempotency_key: Mapped[str] = mapped_column(
+        SOURCE_ID, nullable=False, comment="用于防止重复提交的幂等键"
+    )
+    capability: Mapped[str] = mapped_column(
+        String(128), nullable=False, comment="被调用的能力名称"
+    )
+    actor_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, comment="调用主体类型，例如人工、Agent 或 CI"
+    )
+    actor_id: Mapped[str] = mapped_column(
+        SOURCE_ID, nullable=False, comment="调用主体的稳定身份标识"
+    )
+    environment: Mapped[str] = mapped_column(
+        String(32), nullable=False, comment="操作运行环境，例如 production 或 test"
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        SOURCE_ID, comment="关联的 Agent 运行标识"
+    )
+    case_id: Mapped[str | None] = mapped_column(
+        SOURCE_ID, comment="关联的 Evaluation 用例标识"
+    )
+    request_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, comment="规范化请求内容的摘要"
+    )
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, comment="操作回执状态"
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        SOURCE_ID, comment="关联的同步任务标识"
+    )
+    before_epoch: Mapped[str] = mapped_column(
+        SOURCE_ID, nullable=False, comment="请求开始时的数据集世代标识"
+    )
+    before_version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, comment="请求开始时的数据版本号"
+    )
+    committed_epoch: Mapped[str | None] = mapped_column(
+        SOURCE_ID, comment="业务提交后的数据集世代标识"
+    )
+    committed_version: Mapped[int | None] = mapped_column(
+        BigInteger, comment="业务提交后的数据版本号"
+    )
+    result_summary: Mapped[dict | None] = mapped_column(
+        JSON, comment="脱敏后的结构化结果摘要"
+    )
+    error_code: Mapped[str | None] = mapped_column(
+        String(64), comment="最近一次失败的稳定错误编码"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, comment="操作回执创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, comment="操作回执最近更新时间"
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "actor_id", "environment", "idempotency_key", name="uq_operation_receipt_idempotency"
+        ),
+        Index("ix_operation_receipt_capability", "capability"),
+        Index("ix_operation_receipt_actor_id", "actor_id"),
+        Index("ix_operation_receipt_environment", "environment"),
+        Index("ix_operation_receipt_run_id", "run_id"),
+        Index("ix_operation_receipt_case_id", "case_id"),
+        Index("ix_operation_receipt_status", "status"),
+        Index("ix_operation_receipt_job_id", "job_id"),
+        Index("ix_operation_receipt_error_code", "error_code"),
+        Index("ix_operation_receipt_created_at", "created_at"),
+        _table_args("Agent 操作回执记录"),
+    )

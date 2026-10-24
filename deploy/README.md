@@ -1,5 +1,7 @@
 # 部署说明
 
+2026-10-24 的 MCP 分支整合、`0008→0009` 升级及本机容器验收见 [MCP 整合验收记录](../docs/mcp-integration-acceptance-2026-10-24.md)。app、migrate、mcp 复用同一构建镜像，避免服务与迁移代码不一致。
+
 数据库 `0006—0008` 整改的预检、隔离演练、执行和恢复步骤见 [数据库整改执行包](../docs/database-remediation-runbook-2026-10-22.md)。生成迁移不代表已执行；摘要迁移后所有管理员必须重新登录。
 
 ## 准备配置
@@ -102,7 +104,39 @@ curl --fail http://127.0.0.1:8000/health/ready
 
 ## 数据库集成测试
 
-`compose.mysql-test.yaml` 是可丢弃的独立本机测试环境，使用公开的测试密码和 tmpfs，不用于正式部署。用户提供数据库环境后执行真实 MySQL 事务、并发、迁移与恢复验证。
+Agent Evaluation 使用通用 Python 模块入口，默认串行。先准备独占、可清空的 MySQL 8.4 `_test` 库，字符集与排序规则为 `utf8mb4` / `utf8mb4_general_ci`；按[测试迁移与评测命令](../docs/运行与验收.md#agent-evaluation-测试迁移与命令)核实实际目标并迁移。不要把已有生产环境的 `ORG_DATABASE_URL` 带入迁移进程。
+
+从仓库根目录执行（凭据通过受控环境注入 `ORG_TEST_DATABASE_URL`，不要写入命令、报告或 Git）：
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path backend).Path
+backend/.venv/Scripts/python.exe -m pytest backend/tests/evaluation deploy/tests/test_evaluation_runtime.py -q
+backend/.venv/Scripts/python.exe -m app.evaluation.cli --suite smoke --output .superpowers/evaluation-reports
+```
+
+CLI 的 `--case ORG_AGENT_VERSION_CONFLICT` 可筛选单例；退出码 `0` 为全部硬门槛通过、`1` 为硬断言失败、`2` 为配置/迁移/环境安全失败。没有实际 `_test` MySQL 不会降级为 SQLite 或模拟成功。报告为脱敏 JSON/中文 Markdown，软评分不改变退出码。脚本 Worker 与 Fake Feishu 用于普通 CI；真实模型、企业飞书和 Docker 运行分别验收。
+
+默认输出五维规则软分及 `llm_judge.status=disabled`。可选模型诊断必须由可信调用方显式注入 model、provider 与 `redacted_test_only` 策略，当前只发送允许的工具名、布尔值与行数，自由文本整体遮盖；模型异常仅记录安全失败状态。配置和元数据位置见[软诊断口径](../docs/运行与验收.md#agent-evaluation-软诊断)，普通 CLI 不隐式启用外部模型。
+
+`compose.mysql-test.yaml` 是可丢弃的独立本机测试环境，使用公开的测试密码和 tmpfs，不用于正式部署。它显式设置数据库 `utf8mb4` / `utf8mb4_general_ci`，仅绑定 `127.0.0.1:13306`，库名必须以 `_test` 结尾。
+
+迁移前检查、凭据文件格式、隔离环境的执行命令及 2026-10-15 便携 MySQL 8.4.11 的真实结果见[能力与观察层验收](../docs/运行与验收.md#能力与观察层验收2026-10-15)。上述 18 项是 2026-10-15 便携 MySQL 的历史结果；当前容器验收以 2026-10-24 整合记录为准，企业飞书与真实模型仍另行验收。
+
+## 内部能力服务与 sidecar 边界
+
+内部端点前缀为 `/internal/capabilities`。部署时配置独立随机 `ORG_AGENT_SERVICE_TOKEN` 和 `ORG_AGENT_ENVIRONMENT=production`（隔离测试实例用 `test`）。令牌留空、错误或重复身份头均拒绝；只读 API 密钥、管理员 Cookie 和 CSRF 令牌不能替代此令牌。业务数据库仍由 `ORG_DATABASE_URL` 指向，运行时还需原有 `ORG_SESSION_SECRET`；服务令牌不得进入前端构建、浏览器、URL、访问日志或业务回执。
+
+sidecar 直接通过受控的容器私网连接后端，生产端口继续仅映射宿主机回环地址。只有持有该令牌的受信 sidecar 能声明 `X-Agent-Actor-Type`、`X-Agent-Actor-Id`、`X-Agent-Environment`、可选 `X-Agent-Run-Id` / `X-Agent-Case-Id` 和 `X-Agent-Approved`。这些头代表受信服务的声明，部署者必须在 sidecar 验证调用者身份、权限和人工批准，再重新构造；不得透传浏览器可控头。production 写操作要求明确 `X-Agent-Approved: true`；CI 仅允许 `test` 环境、`_test` 实际数据库和 `test-` / `test_` 前缀的 run_id。
+
+共享服务令牌不提供逐用户授权；不要把不可信客户端放入这个网络。外部 HTTPS 入口必须拒绝整个 `/internal` 路径，不能仅靠没有公开链接或 CORS 隐藏它。例如 Nginx 在普通代理规则前配置：
+
+```nginx
+location = /internal { return 404; }
+location ^~ /internal/ { return 404; }
+```
+
+以上是待部署的网络配置要求；本轮只验证代码与受控 HTTP 鉴权行为，没有部署真实 sidecar 或执行真实 Agent 调用。
+
 # 覆盖权限重新验收
 
 通讯录 scope 变更后，覆盖状态降为 unknown。具备部署主机及数据库配置权限的运维人员完成真实企业验收（已发布应用的全员权限、无部门员工覆盖）后，在 `backend` 目录执行：
@@ -114,3 +148,69 @@ curl --fail http://127.0.0.1:8000/health/ready
 Linux 使用部署环境的 `python -m app.sync.coverage`，参数相同。沿用 `ORG_DATABASE_URL/ORG_SESSION_SECRET/ORG_FEISHU_APP_ID/ORG_FEISHU_TENANT_KEY`；执行前先迁移到最新版本（含 `0003_pending_fact`）。reference 应为验收编号/摘要，不得填写 token/secret。
 
 CLI 将新依据、标记清除、审计与新全量核对任务同事务提交，返回 job_id。该命令不会把覆盖直接改为 complete；worker 后续采集成功才能恢复，旧在途采集不能恢复。无需修改或手工删除数据库行。此文档提供执行方式，本轮没有对真实环境执行。
+
+## 可选 MCP Streamable HTTP 侧车
+
+默认 `docker compose up -d --build` 不启动 MCP。需要时在受限 `.env` 中配置下表，再显式启用：
+
+```powershell
+docker compose --profile agent up -d --build mcp
+docker compose --profile agent ps
+docker compose --profile agent exec -T mcp python -m app.mcp.health
+```
+
+启动顺序为 MySQL → 迁移 → app 就绪 → mcp。侧车与 app 复用 `organization-directory-runtime` 镜像和现有 Dockerfile，独立执行 `python -m app.mcp --transport streamable-http`，不运行应用监督器。侧车仅加入 `internal: true` 的 `capabilities` 网络；app 同时加入原默认网络及能力网络，MySQL、迁移仍在原默认网络。侧车没有宿主机端口、数据库网络、数据卷或全量 `env_file`，仅逐项传递下表配置，不获得数据库、飞书或管理员凭据。构建上下文排除 `.env`、venv 和 `.superpowers` 私有运行/凭据材料。
+
+| 配置 | 用途与默认值 |
+| --- | --- |
+| `ORG_MCP_HOST` | CLI 监听地址；本机默认 `127.0.0.1`，Compose 默认 `0.0.0.0` |
+| `ORG_MCP_PORT` | CLI 监听端口，默认 `8001`，范围 1–65535 |
+| `ORG_MCP_SERVICE_TOKEN` | 必填，MCP 入站独立 Bearer token，仅交给受信 MCP 客户端 |
+| `ORG_AGENT_SERVICE_TOKEN` | 必填，侧车调用内部能力 HTTP 的共享 token，须与 app 一致且与 MCP token 不同 |
+| `ORG_AGENT_ENVIRONMENT` | 必填且与 app 一致，`production` 或 `test`；Compose 默认 `production` |
+| `ORG_MCP_CAPABILITY_BASE_URL` | 必填 HTTP(S) 能力服务 origin；Compose 默认 `http://app:8000` |
+| `ORG_MCP_ACTOR_TYPE` | 必填，`human_agent` 或 `ci_agent`；production 拒绝 ci_agent |
+| `ORG_MCP_ACTOR_ID` | 必填，可信 Agent 主体标识 |
+| `ORG_MCP_RUN_ID` | test 必填且以 `test-` 或 `test_` 开头；production 可省略 |
+| `ORG_MCP_CASE_ID` | 可选用例标识；每个 CI 用例应独立实例化身份 |
+| `ORG_MCP_CONFIRMATION_TIMEOUT` | 有限正数秒，默认 `60`，限制人工确认等待 |
+
+令牌由密码管理器分别生成并写入受限环境配置，禁止写入镜像、命令行、URL 或报告。入站与后台 token 必须不同、非空且满足 ASCII 无空白/控制字符约束。默认 profile 不增加强制令牌插值；启用侧车后缺少或错误配置会安全失败关闭。可选 run/case 的空环境值按省略处理，不存在静态 approved 配置或同义变量别名。`.env` 由 Compose 解析后逐项注入侧车；MCP Python 模块自身不读取 `.env`。
+
+受信客户端必须位于可达能力网络的受控部署环境，连接 `http://mcp:8001/mcp`（自定义端口时相应替换），并使用独立 MCP Bearer token。SDK 的 DNS rebinding 防护始终启用：仅允许当前端口的 `127.0.0.1`、`localhost`、`[::1]`、`mcp` 和显式的非通配监听名；Origin 若存在，须为这些地址的 `http://` origin。通配监听地址不会被加入允许 Host。新域名或 HTTPS 代理应另行审查可信入口配置，不应关闭鉴权或全部 Host 检查。MCP 没有公开端口，后台 `/internal` 仍须由外部代理拒绝。
+
+健康检查模块 `python -m app.mcp.health` 读取相同配置，通过官方 MCP SDK 对真实 `/mcp` 进行初始化和 `list_tools`，要求完整 15 工具目录；不调用业务工具、数据库或飞书。单次总异步截止 4 秒，HTTP 超时 2 秒，Compose 探针上限 8 秒。绑定 `0.0.0.0`/`::` 时分别以 IPv4/IPv6 回环探测。成功退出 0 并输出 `MCP_READY`，任何连接、认证、配置或目录错误退出 1，只输出固定 `MCP_NOT_READY`。此探针只证明适配器协议就绪，后台就绪由既有 app health 依赖负责；没有额外 `/health` 路由，也不声称后台业务事实已验证。
+
+本机调试时，在隔离 shell 注入同名合成配置，设置 `ORG_MCP_HOST=127.0.0.1` 和本机端口、`ORG_MCP_CAPABILITY_BASE_URL` 指向隔离内部服务，再从 backend 目录执行：
+
+```powershell
+.venv/Scripts/python.exe -m app.mcp --transport streamable-http
+.venv/Scripts/python.exe -m app.mcp.health
+```
+
+CLI 的 `--host` / `--port` 优先于环境配置，参数中不传令牌。ASGI 工厂仍为 `app.mcp.config:create_app`；使用 uvicorn factory 时，uvicorn 的 `--host` / `--port` 必须由部署方显式设为与 `ORG_MCP_HOST` / `ORG_MCP_PORT` 相同，工厂配置不控制 uvicorn 自身监听。推荐使用上述 MCP CLI，确保监听与 Host 防护使用同一配置。
+
+生产 human_agent 的 L2 写入须经支持官方 MCP elicitation 的受信客户端展示实际参数并取得人工确认；decline、cancel、不支持或超时均拒绝。test 环境的合法 ci_agent 可由策略自动确认，仅连接隔离 `_test` 数据库的内部服务，不能把该身份用于 production。`approved`、主体身份及内部认证头不接受模型输入或客户端任意同名头赋权。写入超时后先调用 `get_operation`，不自动重试写操作。
+
+2026-10-16 的验收使用本机隐藏子进程；当时 Docker 不可用。2026-10-24 已进行真实独立 Docker/MySQL/MCP 链路验收，最新范围与结果见上述整合记录。历史记录不代表当前环境。
+
+## 本机 MCP 客户端接入（stdio）
+
+Docker 的 `internal` 能力网络实测不发布宿主机端口。保留该隔离配置，本机受信客户端通过 Docker 执行官方 stdio 入口；服务不需要开放公网或回环 TCP 端口。
+
+客户端进程使用 `powershell.exe`，参数为 `-NoProfile -File` 和仓库中 `deploy/mcp-stdio.ps1` 的绝对路径。脚本以固定仓库路径执行 `docker compose --profile agent exec -T mcp python -m app.mcp --transport stdio`。需要 app/mcp 容器已运行及当前用户有 Docker 权限。此操作不会把令牌放在参数或客户端配置里，业务主体固定来自 MCP 容器可信环境；持有 Docker 权限等同受信本机运维权限。
+
+stdio 与 HTTP 使用同一工具、身份、版本、幂等和人工确认策略。客户端必须支持 MCP elicitation 才能完成生产写入；不支持、拒绝、取消或超时均不提交。接入示例（替换为实际仓库绝对路径）：
+
+```json
+{
+  "mcpServers": {
+    "organization-directory": {
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-File", "D:\\WorkBench\\AI Projects\\OrganizationalStructure\\deploy\\mcp-stdio.ps1"]
+    }
+  }
+}
+```
+
+部署人员可执行 `docker compose --profile agent exec -T mcp python -m deploy.mcp_acceptance`，通过官方 HTTP 客户端验证完整目录、实际后台只读调用和人工拒绝边界。该命令会发起并明确拒绝一次合成同步申请，不会批准修改；输出只包含固定检查结果。健康探针只发现工具，不能代替此业务链路验收。

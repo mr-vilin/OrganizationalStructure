@@ -9,7 +9,7 @@ describe('系统信息页面', () => {
   it('展示产品版本、版本分层、架构和版本台账入口', () => {
     render(<SystemInfoPage />);
     expect(screen.getByRole('heading', { name: '系统信息' })).toBeTruthy();
-    expect(screen.getAllByText('v2.8.62').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('v2.8.63').length).toBeGreaterThan(0);
     expect(screen.getByText('前端包版本')).toBeTruthy();
     expect(screen.getByText('业务数据版本')).toBeTruthy();
     expect(screen.getByText(/版本升级信息保存位置/)).toBeTruthy();

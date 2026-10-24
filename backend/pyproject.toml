@@ -5,8 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "organization-directory-backend"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
+  "mcp==2.2.0",
+  "PyYAML==6.0.3",
   "httpx==0.28.1",
   "lark-oapi==1.7.3",
   "alembic==1.16.5",

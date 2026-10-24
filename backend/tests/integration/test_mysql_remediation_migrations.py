@@ -90,3 +90,27 @@ def test_mysql_schema_check_rejects_prefix_unique_index(migration_database):
     with engine.begin() as connection:
         connection.execute(text('ALTER TABLE admin_session DROP INDEX uq_admin_session_token_digest, ADD UNIQUE INDEX uq_admin_session_token_digest(token_digest(16))'))
     assert 'admin_session.index_definition.uq_admin_session_token_digest' in check_schema(engine)['errors']
+
+
+def test_mcp_upgrade_from_current_main_preserves_existing_schema_and_data(migration_database):
+    """真实 0008→0009 只新增回执表，保留当前会话安全与既有表元数据。"""
+    engine, config = migration_database
+    command.upgrade(config, '0008_session_digest')
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO admin_allowlist(open_id,created_at) VALUES ('ou_merge',UTC_TIMESTAMP())"))
+        connection.execute(text("""INSERT INTO admin_session(id,token_digest,open_id,csrf_hash,expires_at)
+            VALUES ('merge-internal',:digest,'ou_merge','synthetic-csrf','2099-01-01')"""),
+                           {'digest': hashlib.sha256(b'synthetic-merge-cookie').hexdigest()})
+    before = schema_snapshot(engine)
+    with engine.connect() as connection:
+        rows = connection.execute(text('SELECT * FROM admin_session')).all()
+    command.upgrade(config, 'head')
+    after = schema_snapshot(engine)
+    assert after['versions'] == ['0009_operation_receipt']
+    assert set(after['tables']) == {*before['tables'], 'operation_receipt'}
+    assert all(after['tables'][name] == spec for name, spec in before['tables'].items())
+    with engine.connect() as connection:
+        assert connection.execute(text('SELECT * FROM admin_session')).all() == rows
+    assert check_schema(engine)['errors'] == []
+    command.downgrade(config, '0008_session_digest')
+    assert schema_snapshot(engine) == before

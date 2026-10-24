@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, select, func
 from app.persistence.models import DatasetState, Department, Employee, EmployeeDepartment, SyncJob, SyncJobDetail, SyncStaging, ChangeLog, EventInbox, SystemSetting, WorkerLease, PendingFact, LoginIdentity, AdminSession
 from app.stores.service import StoreAdminService
+from app.capabilities.receipts import ReceiptRepository
 
 
 class Publisher:
@@ -18,6 +19,7 @@ class Publisher:
                     raise ValueError('STALE_LEASE')
             state = db.scalar(select(DatasetState).where(DatasetState.id == 1).with_for_update())
             if state is None: raise RuntimeError('DATABASE_SCHEMA_INCOMPLETE')
+            first_initialization = candidate.full and state.dataset_epoch == 'pending' and state.initialization_status == 'pending'
             job = db.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update()) if job_id else None
             if job_id and (not job or job.status != 'running' or job.lease_generation != generation or not job.lease_expires_at or job.lease_expires_at <= now):
                 raise ValueError('STALE_LEASE')
@@ -100,6 +102,7 @@ class Publisher:
                 job.success_count = db.scalar(select(func.count()).select_from(SyncJobDetail).where(SyncJobDetail.job_id == job_id, SyncJobDetail.status == 'succeeded')) or 0
                 job.failure_count = db.scalar(select(func.count()).select_from(SyncJobDetail).where(SyncJobDetail.job_id == job_id, SyncJobDetail.status == 'failed')) or 0
                 db.execute(delete(SyncStaging).where(SyncStaging.job_id == job_id))
+                ReceiptRepository().finalize_job_in_session(db, job, now, changed_count=changes, allow_initial_epoch_transition=first_initialization)
             if event_id:
                 event = db.get(EventInbox, event_id)
                 event.status = 'failed' if candidate.pending else 'succeeded'
