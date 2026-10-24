@@ -49,7 +49,7 @@ if ($DatabaseIntegration) {
     if ($dockerReady) {
         $dockerInfo = & docker info --format '{{.ServerVersion}}' 2>$null
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($dockerInfo -join ''))) {
-            $errors.Add('Docker CLI 可用，但 Docker daemon 不可用')
+            $errors.Add('当前进程无法访问 Docker daemon；请检查引擎状态及沙箱/命名管道访问权限')
             Add-Check 'Docker daemon' 'blocked' 'docker info 未返回服务端版本'
         } else {
             Add-Check 'Docker daemon' 'ready' (($dockerInfo -join '').Trim())

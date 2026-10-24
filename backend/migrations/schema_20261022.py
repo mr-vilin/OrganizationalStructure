@@ -31,6 +31,9 @@ def normalize_type(value):
 def normalize_default(value):
     if value is None:
         return None
+    # MySQL 8.4 的 information_schema 会转义 JSON 空对象表达式的引号。
+    if str(value).lower() == r"_utf8mb4\'{}\'":
+        return '{}'
     value = re.sub(r'_utf8mb4', '', str(value), flags=re.I)
     return value.strip("()'\" ")
 

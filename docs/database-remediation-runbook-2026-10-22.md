@@ -10,11 +10,17 @@
 - `0007` 先检查目标排序规则下的所有现有唯一键、既有外键兼容性和孤儿数据，再修改数据库/表默认值与普通文本列。跨库外键阻断。不会删除索引、外键或修改初始化状态。
 - `0008` 撤销全部既有管理员会话，将原令牌转换成摘要并替换内部 ID；保留行数、摘要唯一性和撤销状态。不可还原旧令牌。应用全部管理员需重新登录。
 - `/health/ready` 只读校验版本、所有业务表/字段和关键单例；`pending` 初始化状态允许管理端进入，不代表组织数据已初始化。
-- 本机 Docker 引擎当前不可连接；真实 MySQL 升级/回退/中断/恢复及 HTTPS 登录尚未验证。历史审计中的数据库版本和会话数量不是当前在线证据。
+- 2026-10-24 已在隔离 MySQL 8.4.11 完成升级/回退/中断重试及备份恢复验证；业务库迁移、正式 HTTPS 登录和飞书联调仍未执行。历史审计中的业务数据库版本和会话数量不是当前在线证据。
 
 2026-10-22 本地验证记录：后端全量 `pytest -q -p no:cacheprovider` 为 **112 passed / 13 skipped**；13 项跳过均需要独立 MySQL（既有 6 项、新增迁移 7 项）。`compileall` 和 `git diff --check` 通过；离线 head、0006 升级、0006 回退分别生成 363、140、140 条语句。标准轴与规格轴审查发现的问题已修复并复核。剩余警告来自 Starlette/AnyIO 与 Alembic 配置弃用提示，不影响本轮测试退出码。未执行提交后的部署，也未变更产品发布版本。
 
 2026-10-24 续验记录：修复集中迁移夹具遗漏的 `ORG_DATABASE_URL` 随机库绑定，补充原连接变量存在/不存在两种隔离回归；修正下方根目录命令路径，并让环境预检成功时显式返回 0。后端全量为 **114 passed / 13 skipped**，`compileall` 与 `git diff --check` 通过；标准轴和规格轴复核均无新问题。13 项 MySQL 测试仍未执行：本次只读检查未找到 Docker Linux 引擎管道。以上不代表真实业务库已迁移或完成 HTTPS 登录验收。
+
+2026-10-24 Docker 就绪后验收：沙箱外确认 Docker 29.6.2 可连接，独立 Compose 项目 `organization-remediation-test` 的 MySQL 为 **8.4.11**，仅映射本机 13308 端口、数据使用 tmpfs。真实执行发现 `information_schema` 对 JSON 空对象默认值返回带转义引号的表示；已修复迁移预检和结构验收的等价比较，未改变 DDL 或默认值。后端全量 `pytest -q -p no:cacheprovider --require-mysql` 为 **128 passed / 0 skipped**，包括原先跳过的全部 13 项集成测试。
+
+同日实际备份恢复：在该隔离实例写入 5 条合成业务/凭据记录，使用 `mysqldump --single-transaction --routines --triggers --events --set-gtid-purged=OFF --no-tablespaces` 导出，导入新库 `tmp_org_restore_d3a8c104_test`；逐表核对 21 张业务表的完整结构与所有行均一致。运行 `alembic upgrade head` 和 `deploy.recovery --application-stopped` 后，确认世代更新、初始化 pending、版本 0、覆盖 unknown、会话/API 凭据撤销、部门/员工/门店备注保留、恢复审计写入且结构检查与就绪检查通过。演练未启动业务应用或飞书连接；不代表企业数据已完成同步或正式登录验收。
+
+本轮 `compileall`、`git diff --check` 通过；代码双轴审查未发现新问题。有 Docker 访问权限的终端运行环境预检返回 ready/0。演练结束后已执行测试 Compose 的 `down`，删除本轮容器、网络及 tmpfs 测试数据，Docker Desktop 保持运行。
 
 ## 既有项目规则例外
 
@@ -48,6 +54,8 @@ if ($LASTEXITCODE -ne 0) { throw '结构验收失败，保持应用停写' }
 ## 独立 MySQL 演练
 
 在仓库根目录运行以下命令。`compose.mysql-test.yaml` 使用独立 Compose 项目、13308 端口、公开测试密码和 tmpfs；不挂载业务数据库卷。以下仅针对该可丢弃实例。迁移测试另用随机 `tmp_org_*_test` 库，退出时只删除本次创建的库。
+
+预检失败表示当前进程无法访问 Docker，不足以判断引擎未启动；若 Docker Desktop 正常，检查沙箱及 Windows 命名管道权限，并在具有 Docker 访问权限的终端复核。
 
 ```powershell
 ./scripts/check-environment.ps1 -DatabaseIntegration

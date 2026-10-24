@@ -14,6 +14,16 @@ def _sessions():
     return create_sqlite_sessions(seed_worker_lease=True)
 
 
+def test_mysql_escaped_json_default_matches_empty_object_only():
+    from app.persistence.schema_check import _default
+    from migrations.schema_20261022 import normalize_default
+
+    for normalize in (_default, normalize_default):
+        assert normalize(r"_utf8mb4\'{}\'") == normalize("('{}')")
+        assert normalize(r"_utf8mb4\'[]\'") != normalize("('{}')")
+        assert normalize(None) is None
+
+
 def test_session_cookie_is_sha256_digest_lookup_and_digest_is_not_a_valid_cookie():
     engine, sessions = _sessions()
     try:

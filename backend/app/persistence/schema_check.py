@@ -18,6 +18,9 @@ def _type(value):
 
 
 def _default(value):
+    # 仅识别实库返回的空对象表达式，不泛化移除字面值中的反斜杠。
+    if str(value).lower() == r"_utf8mb4\'{}\'":
+        return '{}'
     return None if value is None else re.sub('_utf8mb4', '', str(value), flags=re.I).strip("()'\" ")
 
 
