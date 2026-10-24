@@ -49,7 +49,7 @@ def mysql_sessions(request):
 
 
 @pytest.fixture
-def migration_database(request):
+def migration_database(request, monkeypatch):
     source = os.getenv('ORG_MIGRATION_TEST_DATABASE_URL')
     if not source:
         if request.config.getoption('--require-mysql'):
@@ -68,6 +68,8 @@ def migration_database(request):
             connection.execute(text(f'CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs'))
             created = True
         target = url.set(database=name).render_as_string(hide_password=False)
+        # env.py 优先读取此变量；必须覆盖外部连接，确保迁移只写随机测试库。
+        monkeypatch.setenv('ORG_DATABASE_URL', target)
         engine = create_mysql_engine(target)
         config = Config(str(Path(__file__).parents[2] / 'alembic.ini'))
         config.set_main_option('script_location', str(Path(__file__).parents[2] / 'migrations'))

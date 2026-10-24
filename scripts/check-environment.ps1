@@ -71,3 +71,4 @@ if ($DatabaseIntegration) {
     errors = $errors
 } | ConvertTo-Json -Depth 4
 if ($errors.Count -gt 0) { exit 1 }
+exit 0

@@ -14,6 +14,8 @@
 
 2026-10-22 本地验证记录：后端全量 `pytest -q -p no:cacheprovider` 为 **112 passed / 13 skipped**；13 项跳过均需要独立 MySQL（既有 6 项、新增迁移 7 项）。`compileall` 和 `git diff --check` 通过；离线 head、0006 升级、0006 回退分别生成 363、140、140 条语句。标准轴与规格轴审查发现的问题已修复并复核。剩余警告来自 Starlette/AnyIO 与 Alembic 配置弃用提示，不影响本轮测试退出码。未执行提交后的部署，也未变更产品发布版本。
 
+2026-10-24 续验记录：修复集中迁移夹具遗漏的 `ORG_DATABASE_URL` 随机库绑定，补充原连接变量存在/不存在两种隔离回归；修正下方根目录命令路径，并让环境预检成功时显式返回 0。后端全量为 **114 passed / 13 skipped**，`compileall` 与 `git diff --check` 通过；标准轴和规格轴复核均无新问题。13 项 MySQL 测试仍未执行：本次只读检查未找到 Docker Linux 引擎管道。以上不代表真实业务库已迁移或完成 HTTPS 登录验收。
+
 ## 既有项目规则例外
 
 保持已存在的字符串/复合主键、BigInteger 日志主键、`created_at/updated_at` 应用维护模式、外键、`uq_`/`ix_` 索引命名和 JSON/TEXT 类型。此整改只调整已确认的注释、默认值表达、排序规则、会话摘要与就绪检查，不按通用 Skill 默认值重建业务模型。`alembic_version` 是 Alembic 管理的兼容性版本表，历史迁移不改写该外部管理对象的列注释。
@@ -45,17 +47,17 @@ if ($LASTEXITCODE -ne 0) { throw '结构验收失败，保持应用停写' }
 
 ## 独立 MySQL 演练
 
-`compose.mysql-test.yaml` 使用独立 Compose 项目、13308 端口、公开测试密码和 tmpfs；不挂载业务数据库卷。以下仅针对该可丢弃实例。迁移测试另用随机 `tmp_org_*_test` 库，退出时只删除本次创建的库。
+在仓库根目录运行以下命令。`compose.mysql-test.yaml` 使用独立 Compose 项目、13308 端口、公开测试密码和 tmpfs；不挂载业务数据库卷。以下仅针对该可丢弃实例。迁移测试另用随机 `tmp_org_*_test` 库，退出时只删除本次创建的库。
 
 ```powershell
-../scripts/check-environment.ps1 -DatabaseIntegration
+./scripts/check-environment.ps1 -DatabaseIntegration
 if ($LASTEXITCODE -ne 0) { throw '数据库集成环境未就绪' }
 docker compose -f compose.mysql-test.yaml up -d --wait
 if ($LASTEXITCODE -ne 0) { throw '隔离 MySQL 未就绪' }
 $env:ORG_MIGRATION_TEST_DATABASE_URL = 'mysql+pymysql://root:isolated-test-only@127.0.0.1:13308/organization_remediation_test'
 Push-Location backend
 try {
-    ./.venv/Scripts/python.exe -m pytest tests/integration/test_mysql_remediation_migrations.py -q -p no:cacheprovider
+    ./.venv/Scripts/python.exe -m pytest tests/integration/test_mysql_remediation_migrations.py -q -p no:cacheprovider --require-mysql
     if ($LASTEXITCODE -ne 0) { throw '迁移演练失败' }
     # 给既有事务/恢复用例准备专用库；只写上面创建的测试实例
     $env:ORG_DATABASE_URL = $env:ORG_MIGRATION_TEST_DATABASE_URL
