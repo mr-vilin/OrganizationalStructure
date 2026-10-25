@@ -73,7 +73,7 @@ class Worker:
                     row = db.get(SyncJob, job.id)
                     if row and row.status == 'running':
                         row.status, row.phase, row.lease_expires_at, row.updated_at = 'queued', 'waiting_initialization', None, now
-                return True
+                return False
             self.current_job = (job.id, job.lease_generation)
             try:
                 self._refresh_coverage()
@@ -98,7 +98,7 @@ class Worker:
             with self.sessions() as db:
                 state = db.get(DatasetState, 1)
                 if state is None or state.initialization_status != 'complete':
-                    return True
+                    return False
             try:
                 self._refresh_coverage()
                 if event.event_type == 'contact.scope.updated_v3':

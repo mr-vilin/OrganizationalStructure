@@ -202,8 +202,16 @@ class SqlSyncJobRepository:
 
     def claim_next(self, now: datetime, lease_expires_at: datetime) -> SyncJob | None:
         with self._sessions.begin() as db:
+            initialized = select(DatasetState.id).where(
+                DatasetState.id == 1, DatasetState.initialization_status == "complete",
+            ).exists()
             job = db.scalar(
-                select(SyncJob).where(SyncJob.status == "queued", or_(SyncJob.lease_expires_at.is_(None), SyncJob.lease_expires_at <= now)).order_by(SyncJob.created_at, SyncJob.id).limit(1).with_for_update(skip_locked=True)
+                select(SyncJob).where(
+                    SyncJob.status == "queued",
+                    or_(SyncJob.lease_expires_at.is_(None), SyncJob.lease_expires_at <= now),
+                    # 初始化前不能认领核对任务，否则旧队首会反复抢占初始化。
+                    or_(SyncJob.type != "reconcile", initialized),
+                ).order_by(SyncJob.created_at, SyncJob.id).limit(1).with_for_update(skip_locked=True)
             )
             if job is None:
                 return None

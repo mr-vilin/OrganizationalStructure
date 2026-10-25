@@ -6,6 +6,8 @@
 
 ### 变更
 
+- 修复初始化前旧核对任务反复占用队首、阻塞初始化且无休眠循环的问题；等待初始化的核对和事件处理进入空闲等待。
+
 - 管理端按 Ant Design Pro 6 工程迁入 Umi Max / Utoopack，统一 ProLayout、PageContainer、受控 ProTable 与人员 ProDescriptions；保留业务协议，补齐任务详情 URL 生命周期及静态 chunk 服务。
 
 - 经用户确认，尚未正式上线，产品版本从旧开发编号重新设为 0.1.0；原记录归档至 [旧编号历史](docs/releases/legacy-development-history.md)。
@@ -17,6 +19,8 @@
 - 回滚：回退本批代码及对应镜像；数据库不需要回滚。本次不修改 Git 历史或已有 tag。
 
 ### 验证
+
+- 2026-10-26：同步队列相关回归 30 项、独立 MySQL 8.4 队列排序与空闲验证 4 项通过；修复不涉及数据库结构迁移。
 
 - 2026-10-25：Pro 迁移前端完整回归 32 项、相关后端 7 项、版本规则 7 项通过；Windows 和 Linux 构建、隔离 Docker 的 31 个静态资源、元信息及浏览器响应式验证通过。真实企业环境与部署尚未验收，见[迁移实施记录](docs/architecture/ant-design-pro-migration-acceptance-2026-10-25.md)。
 
