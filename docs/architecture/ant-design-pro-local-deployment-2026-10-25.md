@@ -1,5 +1,7 @@
 # Ant Design Pro 本机 Docker 部署记录
 
+> 后续：2026-10-26 已部署同步队列修复，最新运行与主分支状态见[后续记录](sync-queue-fix-local-deployment-2026-10-26.md)。下文保留本次界面迁移部署时的事实。
+
 - 日期：2026-10-25（北京时间）。
 - 目标：用户明确选择本机 Docker，Compose 项目 `organization-directory`。
 - 结果：部署成功；app、MCP、MySQL 均 healthy，app / MCP 重启计数均为 0。
