@@ -1,6 +1,6 @@
 # 飞书组织架构维护系统
 
-> 产品版本：v2.8.63 · 日期：2026-10-24
+> 开发初始基线：v0.1.0（尚未正式上线）· 编号规范建立日期：2026-10-24；当前产品版本以 [version.json](./version.json) 为准。
 > 状态：MCP 已整合到本地主分支并完成本机容器与 stdio 客户端验收；真实模型与企业飞书另行验收。
 
 一个独立部署的内部组织服务：同步一家企业的飞书部门、人员和部门归属，在本地标记门店，为管理员提供管理页面，为其他独立业务系统提供只读 API。
@@ -12,6 +12,8 @@
 - [桌面与手机实现截图](./docs/ui/README.md)：实际 React / Ant Design 页面，使用受控测试数据。
 
 技术栈为 Python / FastAPI、React / Ant Design 与 MySQL。代码位于 `backend/`、`frontend/`，部署配置位于 `deploy/`；实施和审查状态见下方台账。
+
+项目开发约束见 [AGENTS.md](./AGENTS.md)。管理端采用 **Ant Design Pro v6 / Umi Max / Utoopack**，保留七个业务页面与原有认证、读取和确认协议；本次验证及未验证项见[迁移验收记录](docs/architecture/ant-design-pro-migration-acceptance-2026-10-25.md)。
 
 ## 开发与运行
 
@@ -25,6 +27,8 @@
 - [Agent Evaluation 安全命令与六场景验收](./docs/运行与验收.md#agent-evaluation-测试迁移与命令)
 - [Agent 能力、观察与评测 ADR 及完整实施裁决](./docs/adr/0002-agent-native-capability-evaluation.md)
 - [分任务进度与审查](./docs/superpowers/progress.md)
+- [产品版本规范（SemVer）](./docs/versioning.md)
+- [产品版本声明](./version.json)
 - [产品版本记录](./CHANGELOG.md)
 
 当前主分支包含 Agent 能力、独立 MCP 适配层与确定性 Evaluation；当前迁移为 `0009_operation_receipt`，数据库与会话采用 `general_ci`，稳定 ID 保留 `utf8mb4_bin`。开发前端不会自动登录或填充业务数据；未连接后端时显示明确的错误与重试入口。

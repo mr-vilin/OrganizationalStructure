@@ -13,7 +13,7 @@
    npm.cmd --prefix frontend run dev
    ```
 
-3. 打开终端显示的 Vite 地址（默认 `http://127.0.0.1:5173`，占用时会顺延端口）。Vite 会把 `/admin`、`/api`、`/health` 代理给本地后端。
+3. 打开终端显示的 Umi Max 地址（默认 `http://127.0.0.1:5173`，可通过 `PORT` 指定端口）。Umi 会把 `/admin`、`/api`、`/auth`、`/health` 代理给本地后端。
 4. 未登录时页面只显示飞书登录入口；身份配置缺失、无权限和后端不可用均有独立提示及重试入口。
 
 管理端默认使用真实接口，不自动登录，也不填充示例业务数据。浏览器请求携带会话 Cookie；写请求在会话验证成功后自动带 `X-CSRF-Token`。
@@ -32,11 +32,17 @@
 ## 构建与检查
 
 ```powershell
+npm.cmd --prefix frontend ci --strict-peer-deps
+npm.cmd --prefix frontend run typecheck
 npm.cmd --prefix frontend test
 npm.cmd --prefix frontend run build
-& .tools/antd/node_modules/.bin/antd.cmd lint frontend/src --format json
+antd.cmd lint frontend/src --format json
 ```
+
+执行 setup、typecheck 或 build 前先停止 dev；这些命令共用 Umi 生成目录，避免并行生成类型和开发路由。
 
 ## 连接与计划
 
 同步中心通过 `/admin/api/status` 显示脱敏连接摘要、最近事件处理时间和失败事件数，并可从事件列表重试包含对象 ID 的失败事件。管理设置通过 `/admin/api/settings/reconcile-schedule` 读取和保存每日核对时间，固定使用 `Asia/Shanghai`。
+
+管理端使用 ProLayout 与 PageContainer，普通资源表由现有 hooks 受控传入 ProTable，不启用额外请求。任务详情使用 `/sync?job=...`，关闭详情会清除参数，支持浏览器前进后退。`react-router-dom` 仅用于测试，应用导航由 Umi 提供。构建命令先生成 Umi 类型并执行 tsc，再构建并输出同一份 `dist/build-info.json`。

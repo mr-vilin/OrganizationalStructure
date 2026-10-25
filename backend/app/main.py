@@ -1,7 +1,7 @@
 from datetime import datetime
 import logging
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy.exc import SQLAlchemyError, OperationalError, InterfaceError, DisconnectionError, TimeoutError as SQLTimeoutError
@@ -15,6 +15,7 @@ from .services import ReadService
 from .admin.router import router as admin_router
 from .capabilities.router import router as capability_router
 from .capabilities.errors import CapabilityError
+from .version import product_build_info
 
 
 app = FastAPI(title="组织架构维护系统", version="1.0.0")
@@ -73,6 +74,12 @@ async def runtime_error_handler(request: Request, exc: RuntimeError):
 @app.get("/health/live")
 def live():
     return {"data": {"status": "ok"}, "meta": {}}
+
+
+@app.get('/admin/api/system/version')
+def system_version(response: Response, identity=Depends(get_admin_identity)):
+    response.headers['Cache-Control'] = 'no-store'
+    return {'data': product_build_info(), 'meta': {}}
 
 
 @app.get("/health/ready")

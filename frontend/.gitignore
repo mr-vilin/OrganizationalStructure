@@ -1,0 +1,5 @@
+.umi/
+.umi-production/
+src/.umi/
+src/.umi-production/
+.cache/

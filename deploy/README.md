@@ -1,5 +1,11 @@
 # 部署说明
 
+## 产品版本与构建
+
+产品版本从根目录 `version.json` 读取，规范见 [版本规范](../docs/versioning.md)。当前重设的开发初始基线为 0.1.0，尚未正式上线。普通开发构建不显示发布日期；旧容器不会因文件修改自动更新版本，需另行构建并部署镜像后核对系统信息页。
+
+Docker 构建时生成同一份 `build-info.json`，分别注入前端和 Python 包；通过 `/admin/api/system/version`（管理员认证）读取服务端版本，不查询业务数据库。开发镜像可用 `--build-arg ORG_COMMIT_SHA=<完整SHA> --build-arg ORG_SOURCE_DIRTY=true` 标识未提交代码。发行构建由干净 tag 提交进行，同时传入 `ORG_RELEASE_TAG`、`ORG_COMMIT_SHA` 和 `ORG_SOURCE_DIRTY=false`；应用、迁移和 MCP 继续复用同一镜像。不得将未知提交或脏代码构建标记为已发行。
+
 2026-10-24 的 MCP 分支整合、`0008→0009` 升级及本机容器验收见 [MCP 整合验收记录](../docs/mcp-integration-acceptance-2026-10-24.md)。app、migrate、mcp 复用同一构建镜像，避免服务与迁移代码不一致。
 
 数据库 `0006—0008` 整改的预检、隔离演练、执行和恢复步骤见 [数据库整改执行包](../docs/database-remediation-runbook-2026-10-22.md)。生成迁移不代表已执行；摘要迁移后所有管理员必须重新登录。
@@ -214,3 +220,11 @@ stdio 与 HTTP 使用同一工具、身份、版本、幂等和人工确认策�
 ```
 
 部署人员可执行 `docker compose --profile agent exec -T mcp python -m deploy.mcp_acceptance`，通过官方 HTTP 客户端验证完整目录、实际后台只读调用和人工拒绝边界。该命令会发起并明确拒绝一次合成同步申请，不会批准修改；输出只包含固定检查结果。健康探针只发现工具，不能代替此业务链路验收。
+
+## Pro / Umi 管理端构建
+
+前端采用 Umi Max 4.7.23、Utoopack 和 ProComponents 3.1.14-2（预发布），沿用 Node 24 多阶段构建及 Python 3.13 单应用镜像。Docker 在复制前端、版本脚本和版本声明后执行严格 `npm ci`，postinstall 生成 Umi 类型；不复制宿主机 `.umi` 和缓存。`ORG_BUILD_INFO_FILE` 继续把同一份元信息交给前后端。
+
+静态入口支持根级与子目录 JS/CSS/chunk、字体、图片和 `build-info.json`，检查解析后的目录边界；入口和元信息使用 `no-cache`，缺失资源及保留 API/认证路径返回 404，业务导航回退到 index.html。回滚必须使用配套的完整镜像，同时回退入口、chunk 和元信息；无需数据库迁移。
+
+验证状态与 Docker Hub 网络限制见[迁移验收记录](../docs/architecture/ant-design-pro-migration-acceptance-2026-10-25.md)。

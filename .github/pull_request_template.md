@@ -4,9 +4,14 @@
 
 ## 版本台账
 
-- [ ] 已更新根目录 `CHANGELOG.md`
-- [ ] 若无产品版本变化，已明确写出“无产品版本变化”及原因
-- [ ] 若有产品版本变化，已同步更新系统信息页的当前版本和发布日期
+- [ ] 已遵循 `docs/versioning.md`，更新 `CHANGELOG.md` 的 Unreleased，或说明无产品行为变化
+- [ ] 若为发布 PR，已更新唯一声明 `version.json` 和对应版本记录；没有手工改写页面版本
+- [ ] 已评估 HTTP API、MCP、稳定 ID、数据语义和部署契约的兼容性
+- [ ] 已运行 `node scripts/versioning.mjs check`；发布 PR 还需 `--release`
+
+版本影响：修复 / 兼容新增或弃用 / 破坏性变化 / 无产品行为变化
+
+理由、迁移及升级影响：
 
 ## 验证
 
