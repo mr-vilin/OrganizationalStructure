@@ -1,7 +1,7 @@
 # Ant Design Pro 6 迁移设计方案
 
 - 日期：2026-10-25（北京时间）。
-- 状态：路线 A 已按用户实施指令执行；本机及隔离 Docker 验证完成，未部署。下文保留设计时基线与拟定方案，最终实现和验证边界见[实施验收记录](ant-design-pro-migration-acceptance-2026-10-25.md)。
+- 状态：路线 A 已按用户实施指令执行；本机及隔离 Docker 验证完成，并已按后续指令[部署到本机 Docker](ant-design-pro-local-deployment-2026-10-25.md)。下文保留设计时基线与拟定方案，最终实现和验证边界见[实施验收记录](ant-design-pro-migration-acceptance-2026-10-25.md)。
 - 项目：OrganizationalStructure。
 - 核查基线：`main`，HEAD 为 `3b248ac362ad`；同时核查了当前未提交文件。
 - 目标：以 Ant Design Pro 6 组织整个管理端工程、布局、导航和业务页面，并延续现有业务协议。
