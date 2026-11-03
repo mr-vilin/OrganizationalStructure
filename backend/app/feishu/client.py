@@ -41,8 +41,10 @@ class FeishuClient:
 
     def pages(self, resource, **params):
         identifier = params.pop('department_id', None)
-        path = {'scopes': 'scopes', 'users': 'users/find_by_department', 'children': f'departments/{quote(str(identifier), safe="")}/children'}[resource]
+        path = {'scopes': 'scopes', 'users': 'users/find_by_department', 'custom_attrs': 'custom_attrs', 'children': f'departments/{quote(str(identifier), safe="")}/children'}[resource]
         query = {'user_id_type': 'user_id', 'department_id_type': 'open_department_id', 'page_size': 50, **params}
+        if resource == 'custom_attrs':
+            query = {'page_size': 100, **params}
         if resource == 'users':
             query['department_id'] = identifier
         if resource == 'children':

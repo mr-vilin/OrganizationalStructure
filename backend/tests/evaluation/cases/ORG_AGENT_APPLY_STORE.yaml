@@ -1,0 +1,149 @@
+# 固定合成夹具和字面预期；不得由 Worker 输出或生产归属函数生成。
+schema_version: 1
+case_id: ORG_AGENT_APPLY_STORE
+goal: 读取员工 eval_employee_primary 的归属及版本，将 people_service 标记为门店并设编码 EVAL_SERVICE；先预览影响，再在测试身份权限内应用，最后读取确认员工的主门店与版本。
+fixture:
+  dataset_state:
+    id: 1
+    dataset_epoch: test-eval-primary-store
+    data_version: 1
+    initialization_status: complete
+    coverage_status: complete
+  departments:
+  - id: hq
+    feishu_department_id: hq
+    parent_id: null
+    name: 测试总部
+    status: active
+    sync_quality: complete
+    is_virtual_root: false
+  - id: store_people
+    feishu_department_id: store_people
+    parent_id: hq
+    name: 测试人民店
+    status: active
+    sync_quality: complete
+    is_virtual_root: false
+  - id: store_river
+    feishu_department_id: store_river
+    parent_id: hq
+    name: 测试滨江店
+    status: active
+    sync_quality: complete
+    is_virtual_root: false
+  - id: people_service
+    feishu_department_id: people_service
+    parent_id: store_people
+    name: 测试人民店服务组
+    status: active
+    sync_quality: complete
+    is_virtual_root: false
+  - id: river_service
+    feishu_department_id: river_service
+    parent_id: store_river
+    name: 测试滨江店服务组
+    status: active
+    sync_quality: complete
+    is_virtual_root: false
+  employees:
+  - id: eval_employee_primary
+    feishu_user_id: eval_employee_primary
+    name: 测试员工甲
+    status: active
+    sync_quality: complete
+    primary_department_id: people_service
+    primary_store_status: resolved
+  employee_departments:
+  - employee_id: eval_employee_primary
+    department_id: river_service
+    is_primary: false
+    active: true
+  - employee_id: eval_employee_primary
+    department_id: people_service
+    is_primary: true
+    active: true
+  store_profiles:
+  - department_id: store_people
+    is_store: true
+    store_code: EVAL_PEOPLE
+    notes: 合成评测门店
+  - department_id: store_river
+    is_store: true
+    store_code: EVAL_RIVER
+    notes: 合成评测门店
+  employee_stores:
+  - employee_id: eval_employee_primary
+    store_id: store_river
+    is_primary: false
+    path:
+    - river_service
+    - store_river
+  - employee_id: eval_employee_primary
+    store_id: store_people
+    is_primary: true
+    path:
+    - people_service
+    - store_people
+  system_settings:
+  - key: reconcile_schedule
+    value: '{"enabled": false, "local_time": "03:00", "timezone": "Asia/Shanghai",
+      "updated_at": null}'
+  fake_feishu:
+    scenario_id: ORG_AGENT_APPLY_STORE
+    responses: []
+allowed_tools:
+- get_employee
+- get_department
+- list_stores
+- get_store
+- list_store_employees
+- get_system_status
+- preview_store_changes
+- apply_store_changes
+expected_state:
+  preview_apply:
+    predicate: matching_store_changes
+  read_completion:
+    predicate: employee_attribution
+  employee_id: eval_employee_primary
+  primary_department_id: people_service
+  primary_store_id: people_service
+  primary_store_status: resolved
+  store_ids:
+  - people_service
+  - store_river
+  version_delta: 1
+  execution: submitted
+  fact_quality: resolved
+  operation:
+    capability: apply_store_changes
+    status: submitted
+    count: 1
+    audit_required: true
+    job_required: false
+  rows:
+  - table: store_profile
+    where:
+      department_id: people_service
+    equals:
+      is_store: true
+      store_code: EVAL_SERVICE
+    count: 1
+  - table: employee_store
+    where:
+      employee_id: eval_employee_primary
+      store_id: people_service
+    equals:
+      is_primary: true
+      path:
+      - people_service
+    count: 1
+forbidden_effects:
+- predicate: no_new_sync_jobs
+- predicate: no_feishu_writes
+- predicate: rows_unchanged
+  table: store_profile
+  where:
+    department_id: store_river
+timeout_seconds: 30
+max_tool_calls: 12

@@ -1,4 +1,4 @@
-"""生产同源入口；开发时前端由 Vite 提供。"""
+"""生产同源入口；开发时前端由 Umi Max 提供。"""
 from pathlib import Path
 
 from app.main import app

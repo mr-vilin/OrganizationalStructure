@@ -47,8 +47,15 @@ class OAuthService:
                 db.add(ChangeLog(object_type='security',object_id=identity['open_id'],source='oauth',actor=None,before_data=None,after_data={'error_code':failure},committed_at=now))
             else:
                 if existing is None: db.add(LoginIdentity(open_id=identity['open_id'],user_id=identity['user_id'],tenant_key=identity['tenant_key']))
-                session = AdminSession(id=secrets.token_urlsafe(32), open_id=identity['open_id'], csrf_hash=hmac.new(self.settings.session_secret.get_secret_value().encode(), csrf.encode(), hashlib.sha256).hexdigest(), expires_at=now+timedelta(hours=12))
+                session_token = secrets.token_urlsafe(32)
+                session = AdminSession(
+                    id=secrets.token_urlsafe(16),
+                    token_digest=hashlib.sha256(session_token.encode()).hexdigest(),
+                    open_id=identity['open_id'],
+                    csrf_hash=hmac.new(self.settings.session_secret.get_secret_value().encode(), csrf.encode(), hashlib.sha256).hexdigest(),
+                    expires_at=now+timedelta(hours=12),
+                )
                 db.add(session)
         # 先提交安全事件，再拒绝；不要随业务异常回滚审计。
         if failure: raise ValueError(failure)
-        return session, csrf
+        return session, csrf, session_token

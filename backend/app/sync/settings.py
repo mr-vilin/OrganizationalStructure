@@ -2,7 +2,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
-from app.persistence.models import SystemSetting, ChangeLog
+from app.persistence.models import SystemSetting, ChangeLog, DatasetState
 
 DEFAULT = {'enabled': True, 'local_time': '03:00', 'timezone': 'Asia/Shanghai', 'updated_at': None}
 
@@ -20,6 +20,9 @@ class ScheduleService:
             raise ValueError('VALIDATION_ERROR')
         now = datetime.now(timezone.utc)
         with self.sessions.begin() as db:
+            state = db.get(DatasetState, 1)
+            if value.get('enabled') and (state is None or state.initialization_status != 'complete'):
+                raise ValueError('INITIALIZATION_INCOMPLETE')
             db.scalar(select(SystemSetting).where(SystemSetting.key == 'task_queue_lock').with_for_update())
             row = db.get(SystemSetting, 'reconcile_schedule')
             before = json.loads(row.value) if row else dict(DEFAULT)
@@ -33,6 +36,9 @@ class ScheduleService:
             db.scalar(select(SystemSetting).where(SystemSetting.key == 'task_queue_lock').with_for_update())
             setting = db.get(SystemSetting, 'reconcile_schedule')
             schedule = json.loads(setting.value) if setting else DEFAULT
+            state = db.get(DatasetState, 1)
+            if state is None or state.initialization_status != 'complete':
+                return False
             local = now.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=8)))
             day = local.strftime('%Y-%m-%d')
             previous = db.get(SystemSetting, 'reconcile_last_day')
@@ -43,6 +49,6 @@ class ScheduleService:
             import secrets
             active = db.scalar(select(SyncJob).where(SyncJob.type == 'reconcile', SyncJob.root_department_id.is_(None), SyncJob.status.in_(['queued', 'running'])))
             if active is None:
-                db.add(SyncJob(id=secrets.token_urlsafe(12), type='reconcile', requested_by='schedule', status='queued', created_at=now, updated_at=now))
+                db.add(SyncJob(id=secrets.token_urlsafe(12), type='reconcile', name='定时组织同步', trigger_source='schedule', description='按管理端配置自动触发的全量核对', requested_by='schedule', status='queued', phase='queued', created_at=now, updated_at=now))
             db.merge(SystemSetting(key='reconcile_last_day', value=day))
             return True

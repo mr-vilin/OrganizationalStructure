@@ -1,0 +1,1614 @@
+{
+  "admin_allowlist": {
+    "comment": "管理员白名单",
+    "columns": {
+      "open_id": {
+        "definition": "open_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '管理员飞书开放标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "管理员飞书开放标识",
+        "comment": "管理员飞书开放标识"
+      },
+      "created_at": {
+        "definition": "created_at DATETIME NOT NULL COMMENT '加入白名单时间'",
+        "type": "DATETIME",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "加入白名单时间",
+        "comment": "加入白名单时间"
+      }
+    }
+  },
+  "admin_session": {
+    "comment": "管理员登录会话",
+    "columns": {
+      "id": {
+        "definition": "id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '管理员会话内部标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "管理员会话标识",
+        "comment": "管理员会话内部标识"
+      },
+      "open_id": {
+        "definition": "open_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '管理员飞书开放标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "管理员飞书开放标识",
+        "comment": "管理员飞书开放标识"
+      },
+      "csrf_hash": {
+        "definition": "csrf_hash VARCHAR(64) NOT NULL COMMENT 'CSRF 令牌摘要'",
+        "type": "VARCHAR(64)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "CSRF 令牌摘要",
+        "comment": "CSRF 令牌摘要"
+      },
+      "expires_at": {
+        "definition": "expires_at DATETIME NOT NULL COMMENT '会话过期时间'",
+        "type": "DATETIME",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "会话过期时间",
+        "comment": "会话过期时间"
+      },
+      "revoked_at": {
+        "definition": "revoked_at DATETIME COMMENT '会话撤销时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "会话撤销时间",
+        "comment": "会话撤销时间"
+      }
+    }
+  },
+  "api_client": {
+    "comment": "只读 API 客户端",
+    "columns": {
+      "id": {
+        "definition": "id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT 'API 客户端标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "API 客户端标识",
+        "comment": "API 客户端标识"
+      },
+      "name": {
+        "definition": "name VARCHAR(255) NOT NULL COMMENT 'API 客户端名称'",
+        "type": "VARCHAR(255)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "API 客户端名称",
+        "comment": "API 客户端名称"
+      },
+      "secret_hash": {
+        "definition": "secret_hash VARCHAR(255) NOT NULL COMMENT '客户端密钥摘要'",
+        "type": "VARCHAR(255)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "客户端密钥摘要",
+        "comment": "客户端密钥摘要"
+      },
+      "created_at": {
+        "definition": "created_at DATETIME NOT NULL COMMENT '创建时间'",
+        "type": "DATETIME",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "创建时间",
+        "comment": "创建时间"
+      },
+      "revoked_at": {
+        "definition": "revoked_at DATETIME COMMENT '撤销时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "撤销时间",
+        "comment": "撤销时间"
+      }
+    }
+  },
+  "change_log": {
+    "comment": "数据变更审计日志",
+    "columns": {
+      "id": {
+        "definition": "id BIGINT NOT NULL COMMENT '变更日志自增标识' AUTO_INCREMENT",
+        "type": "BIGINT",
+        "nullable": false,
+        "autoincrement": true,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "变更日志自增标识",
+        "comment": "变更日志自增标识"
+      },
+      "object_type": {
+        "definition": "object_type VARCHAR(32) NOT NULL COMMENT '变更对象类型'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "变更对象类型",
+        "comment": "变更对象类型"
+      },
+      "object_id": {
+        "definition": "object_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '变更对象标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "变更对象标识",
+        "comment": "变更对象标识"
+      },
+      "source": {
+        "definition": "source VARCHAR(32) NOT NULL COMMENT '变更来源'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "变更来源",
+        "comment": "变更来源"
+      },
+      "actor": {
+        "definition": "actor VARCHAR(255) COMMENT '操作主体'",
+        "type": "VARCHAR(255)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "操作主体",
+        "comment": "操作主体"
+      },
+      "job_id": {
+        "definition": "job_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '关联同步任务标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "关联同步任务标识",
+        "comment": "关联同步任务标识"
+      },
+      "before_data": {
+        "definition": "before_data JSON COMMENT '变更前数据'",
+        "type": "JSON",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "变更前数据",
+        "comment": "变更前数据"
+      },
+      "after_data": {
+        "definition": "after_data JSON COMMENT '变更后数据'",
+        "type": "JSON",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "变更后数据",
+        "comment": "变更后数据"
+      },
+      "committed_at": {
+        "definition": "committed_at DATETIME NOT NULL COMMENT '变更提交时间'",
+        "type": "DATETIME",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "变更提交时间",
+        "comment": "变更提交时间"
+      }
+    }
+  },
+  "dataset_state": {
+    "comment": "组织数据集状态单例",
+    "columns": {
+      "id": {
+        "definition": "id INTEGER NOT NULL COMMENT '数据集状态单例标识' AUTO_INCREMENT",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": true,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "数据集状态单例标识",
+        "comment": "数据集状态单例标识"
+      },
+      "dataset_epoch": {
+        "definition": "dataset_epoch VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '数据集世代标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "数据集世代标识",
+        "comment": "数据集世代标识"
+      },
+      "data_version": {
+        "definition": "data_version BIGINT NOT NULL COMMENT '已提交数据版本号'",
+        "type": "BIGINT",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "已提交数据版本号",
+        "comment": "已提交数据版本号"
+      },
+      "initialization_status": {
+        "definition": "initialization_status VARCHAR(32) NOT NULL COMMENT '初始化状态'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "初始化状态",
+        "comment": "初始化状态"
+      },
+      "coverage_status": {
+        "definition": "coverage_status VARCHAR(32) NOT NULL COMMENT '通讯录覆盖状态'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "通讯录覆盖状态",
+        "comment": "通讯录覆盖状态"
+      },
+      "last_full_sync_at": {
+        "definition": "last_full_sync_at DATETIME COMMENT '最近一次全量同步时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "最近一次全量同步时间",
+        "comment": "最近一次全量同步时间"
+      }
+    }
+  },
+  "department": {
+    "comment": "飞书部门目录",
+    "columns": {
+      "id": {
+        "definition": "id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '内部部门稳定标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "内部部门稳定标识",
+        "comment": "内部部门稳定标识"
+      },
+      "feishu_department_id": {
+        "definition": "feishu_department_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '飞书部门标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "飞书部门标识",
+        "comment": "飞书部门标识"
+      },
+      "parent_id": {
+        "definition": "parent_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '父部门标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "父部门标识",
+        "comment": "父部门标识"
+      },
+      "name": {
+        "definition": "name VARCHAR(255) NOT NULL COMMENT '部门名称'",
+        "type": "VARCHAR(255)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "部门名称",
+        "comment": "部门名称"
+      },
+      "leader_user_id": {
+        "definition": "leader_user_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '部门负责人用户标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "部门负责人对应的飞书用户稳定标识",
+        "comment_0006": "部门负责人用户标识",
+        "comment": "部门负责人用户标识"
+      },
+      "status": {
+        "definition": "status VARCHAR(32) NOT NULL COMMENT '部门状态'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "部门状态",
+        "comment": "部门状态"
+      },
+      "sync_quality": {
+        "definition": "sync_quality VARCHAR(32) NOT NULL COMMENT '部门同步质量'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "部门同步质量",
+        "comment": "部门同步质量"
+      },
+      "is_virtual_root": {
+        "definition": "is_virtual_root BOOL NOT NULL COMMENT '是否为虚拟根部门'",
+        "type": "BOOL",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "是否为虚拟根部门",
+        "comment": "是否为虚拟根部门"
+      },
+      "last_seen_at": {
+        "definition": "last_seen_at DATETIME COMMENT '最近一次从飞书看到的时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "最近一次从飞书看到的时间",
+        "comment": "最近一次从飞书看到的时间"
+      }
+    }
+  },
+  "event_inbox": {
+    "comment": "飞书事件收件箱",
+    "columns": {
+      "event_id": {
+        "definition": "event_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '飞书事件标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "飞书事件标识",
+        "comment": "飞书事件标识"
+      },
+      "event_type": {
+        "definition": "event_type VARCHAR(128) NOT NULL COMMENT '飞书事件类型'",
+        "type": "VARCHAR(128)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "飞书事件类型",
+        "comment": "飞书事件类型"
+      },
+      "object_id": {
+        "definition": "object_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '事件对象标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "事件对象标识",
+        "comment": "事件对象标识"
+      },
+      "payload": {
+        "definition": "payload JSON NOT NULL COMMENT '事件原始载荷'",
+        "type": "JSON",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "事件原始载荷",
+        "comment": "事件原始载荷"
+      },
+      "status": {
+        "definition": "status VARCHAR(32) NOT NULL COMMENT '事件处理状态'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "事件处理状态",
+        "comment": "事件处理状态"
+      },
+      "attempts": {
+        "definition": "attempts INTEGER NOT NULL COMMENT '事件处理尝试次数'",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "事件处理尝试次数",
+        "comment": "事件处理尝试次数"
+      },
+      "received_at": {
+        "definition": "received_at DATETIME NOT NULL COMMENT '事件接收时间'",
+        "type": "DATETIME",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "事件接收时间",
+        "comment": "事件接收时间"
+      }
+    }
+  },
+  "feishu_connection": {
+    "comment": "飞书连接配置",
+    "columns": {
+      "id": {
+        "definition": "id INTEGER NOT NULL COMMENT '飞书连接单例标识' AUTO_INCREMENT",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": true,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "飞书连接单例标识",
+        "comment": "飞书连接单例标识"
+      },
+      "tenant_key": {
+        "definition": "tenant_key VARCHAR(191) COLLATE utf8mb4_bin COMMENT '飞书租户标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "飞书租户标识",
+        "comment": "飞书租户标识"
+      },
+      "app_id": {
+        "definition": "app_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '飞书应用标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "飞书应用标识",
+        "comment": "飞书应用标识"
+      },
+      "status": {
+        "definition": "status VARCHAR(32) NOT NULL COMMENT '连接状态'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "连接状态",
+        "comment": "连接状态"
+      },
+      "coverage_status": {
+        "definition": "coverage_status VARCHAR(32) NOT NULL COMMENT '连接覆盖状态'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "连接覆盖状态",
+        "comment": "连接覆盖状态"
+      },
+      "custom_attrs": {
+        "definition": "custom_attrs JSON NOT NULL COMMENT '自定义字段映射与选项定义' DEFAULT ('{}')",
+        "type": "JSON",
+        "nullable": false,
+        "autoincrement": false,
+        "default": "('{}')",
+        "collation": null,
+        "baseline_comment": "按飞书连接保存的自定义字段映射与选项定义",
+        "comment_0006": "自定义字段映射与选项定义",
+        "comment": "自定义字段映射与选项定义"
+      }
+    }
+  },
+  "login_identity": {
+    "comment": "飞书登录身份映射",
+    "columns": {
+      "open_id": {
+        "definition": "open_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '飞书开放标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "飞书开放标识",
+        "comment": "飞书开放标识"
+      },
+      "user_id": {
+        "definition": "user_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '飞书用户标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "飞书用户标识",
+        "comment": "飞书用户标识"
+      },
+      "tenant_key": {
+        "definition": "tenant_key VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '飞书租户标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "飞书租户标识",
+        "comment": "飞书租户标识"
+      }
+    }
+  },
+  "oauth_state": {
+    "comment": "OAuth 登录状态记录",
+    "columns": {
+      "digest": {
+        "definition": "digest VARCHAR(64) NOT NULL COMMENT 'OAuth 状态摘要'",
+        "type": "VARCHAR(64)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "OAuth 状态摘要",
+        "comment": "OAuth 状态摘要"
+      },
+      "expires_at": {
+        "definition": "expires_at DATETIME NOT NULL COMMENT 'OAuth 状态过期时间'",
+        "type": "DATETIME",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "OAuth 状态过期时间",
+        "comment": "OAuth 状态过期时间"
+      }
+    }
+  },
+  "pending_fact": {
+    "comment": "待核实同步事实",
+    "columns": {
+      "object_type": {
+        "definition": "object_type VARCHAR(32) NOT NULL COMMENT '待核实对象类型'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "待核实对象类型",
+        "comment": "待核实对象类型"
+      },
+      "source_id": {
+        "definition": "source_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '待核实来源标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "待核实来源标识",
+        "comment": "待核实来源标识"
+      },
+      "normalized_data": {
+        "definition": "normalized_data JSON NOT NULL COMMENT '待核实规范化数据'",
+        "type": "JSON",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "待核实规范化数据",
+        "comment": "待核实规范化数据"
+      },
+      "error_code": {
+        "definition": "error_code VARCHAR(64) NOT NULL COMMENT '待核实错误编码'",
+        "type": "VARCHAR(64)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "待核实错误编码",
+        "comment": "待核实错误编码"
+      },
+      "updated_at": {
+        "definition": "updated_at DATETIME NOT NULL COMMENT '待核实记录更新时间'",
+        "type": "DATETIME",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "待核实记录更新时间",
+        "comment": "待核实记录更新时间"
+      }
+    }
+  },
+  "sync_job": {
+    "comment": "同步任务",
+    "columns": {
+      "id": {
+        "definition": "id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '同步任务标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "同步任务标识",
+        "comment": "同步任务标识"
+      },
+      "type": {
+        "definition": "type VARCHAR(32) NOT NULL COMMENT '同步任务类型'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "同步任务类型",
+        "comment": "同步任务类型"
+      },
+      "name": {
+        "definition": "name VARCHAR(255) COMMENT '同步任务名称'",
+        "type": "VARCHAR(255)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "同步任务名称",
+        "comment_0006": "同步任务名称",
+        "comment": "同步任务名称"
+      },
+      "trigger_source": {
+        "definition": "trigger_source VARCHAR(32) COMMENT '任务触发来源'",
+        "type": "VARCHAR(32)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "任务触发来源",
+        "comment_0006": "任务触发来源",
+        "comment": "任务触发来源"
+      },
+      "description": {
+        "definition": "description TEXT COMMENT '同步任务说明'",
+        "type": "TEXT",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "同步任务业务说明",
+        "comment_0006": "同步任务说明",
+        "comment": "同步任务说明"
+      },
+      "root_department_id": {
+        "definition": "root_department_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '子树同步根部门标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "子树同步根部门标识",
+        "comment": "子树同步根部门标识"
+      },
+      "requested_by": {
+        "definition": "requested_by VARCHAR(255) NOT NULL COMMENT '任务请求方'",
+        "type": "VARCHAR(255)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "任务请求方",
+        "comment": "任务请求方"
+      },
+      "status": {
+        "definition": "status VARCHAR(32) NOT NULL COMMENT '任务状态'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "任务状态",
+        "comment": "任务状态"
+      },
+      "phase": {
+        "definition": "phase VARCHAR(64) COMMENT '任务阶段'",
+        "type": "VARCHAR(64)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "任务阶段",
+        "comment": "任务阶段"
+      },
+      "attempt": {
+        "definition": "attempt INTEGER NOT NULL COMMENT '任务尝试次数'",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "任务尝试次数",
+        "comment": "任务尝试次数"
+      },
+      "execution_count": {
+        "definition": "execution_count INTEGER NOT NULL COMMENT '任务执行次数' DEFAULT 0",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": false,
+        "default": "0",
+        "collation": null,
+        "baseline_comment": "任务执行次数",
+        "comment_0006": "任务执行次数",
+        "comment": "任务执行次数"
+      },
+      "retry_count": {
+        "definition": "retry_count INTEGER NOT NULL COMMENT '任务重试次数' DEFAULT 0",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": false,
+        "default": "0",
+        "collation": null,
+        "baseline_comment": "任务重试次数",
+        "comment_0006": "任务重试次数",
+        "comment": "任务重试次数"
+      },
+      "total_count": {
+        "definition": "total_count INTEGER COMMENT '任务对象总数'",
+        "type": "INTEGER",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "任务对象总数，未知时为空",
+        "comment_0006": "任务对象总数",
+        "comment": "任务对象总数"
+      },
+      "success_count": {
+        "definition": "success_count INTEGER NOT NULL COMMENT '任务成功对象数' DEFAULT 0",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": false,
+        "default": "0",
+        "collation": null,
+        "baseline_comment": "任务成功对象数",
+        "comment_0006": "任务成功对象数",
+        "comment": "任务成功对象数"
+      },
+      "failure_count": {
+        "definition": "failure_count INTEGER NOT NULL COMMENT '任务失败对象数' DEFAULT 0",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": false,
+        "default": "0",
+        "collation": null,
+        "baseline_comment": "任务失败对象数",
+        "comment_0006": "任务失败对象数",
+        "comment": "任务失败对象数"
+      },
+      "lease_generation": {
+        "definition": "lease_generation INTEGER NOT NULL COMMENT '任务租约世代号'",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "任务租约世代号",
+        "comment": "任务租约世代号"
+      },
+      "lease_expires_at": {
+        "definition": "lease_expires_at DATETIME COMMENT '任务租约过期时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "任务租约过期时间",
+        "comment": "任务租约过期时间"
+      },
+      "error_code": {
+        "definition": "error_code VARCHAR(64) COMMENT '任务错误编码'",
+        "type": "VARCHAR(64)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "任务错误编码",
+        "comment": "任务错误编码"
+      },
+      "error_detail": {
+        "definition": "error_detail TEXT COMMENT '任务错误详情'",
+        "type": "TEXT",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "任务错误详情",
+        "comment": "任务错误详情"
+      },
+      "created_at": {
+        "definition": "created_at DATETIME NOT NULL COMMENT '任务创建时间'",
+        "type": "DATETIME",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "任务创建时间",
+        "comment": "任务创建时间"
+      },
+      "updated_at": {
+        "definition": "updated_at DATETIME NOT NULL COMMENT '任务更新时间'",
+        "type": "DATETIME",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "任务更新时间",
+        "comment": "任务更新时间"
+      },
+      "started_at": {
+        "definition": "started_at DATETIME COMMENT '任务开始时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "任务开始时间",
+        "comment_0006": "任务开始时间",
+        "comment": "任务开始时间"
+      },
+      "finished_at": {
+        "definition": "finished_at DATETIME COMMENT '任务结束时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "任务结束时间",
+        "comment_0006": "任务结束时间",
+        "comment": "任务结束时间"
+      }
+    }
+  },
+  "system_setting": {
+    "comment": "系统设置",
+    "columns": {
+      "key": {
+        "definition": "`key` VARCHAR(128) COLLATE utf8mb4_bin NOT NULL COMMENT '系统设置键名'",
+        "type": "VARCHAR(128) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "系统设置键名",
+        "comment": "系统设置键名"
+      },
+      "value": {
+        "definition": "value TEXT NOT NULL COMMENT '系统设置值'",
+        "type": "TEXT",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "系统设置值",
+        "comment": "系统设置值"
+      }
+    }
+  },
+  "worker_lease": {
+    "comment": "同步 Worker 租约",
+    "columns": {
+      "id": {
+        "definition": "id INTEGER NOT NULL COMMENT 'worker 租约单例标识' AUTO_INCREMENT",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": true,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "worker 租约单例标识",
+        "comment": "worker 租约单例标识"
+      },
+      "owner": {
+        "definition": "owner VARCHAR(191) COLLATE utf8mb4_bin COMMENT '当前 worker 标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "当前 worker 标识",
+        "comment": "当前 worker 标识"
+      },
+      "generation": {
+        "definition": "generation INTEGER NOT NULL COMMENT '租约世代号'",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "租约世代号",
+        "comment": "租约世代号"
+      },
+      "expires_at": {
+        "definition": "expires_at DATETIME COMMENT '租约过期时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "租约过期时间",
+        "comment": "租约过期时间"
+      }
+    }
+  },
+  "employee": {
+    "comment": "飞书员工目录",
+    "columns": {
+      "id": {
+        "definition": "id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '内部员工稳定标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "内部员工稳定标识",
+        "comment": "内部员工稳定标识"
+      },
+      "feishu_user_id": {
+        "definition": "feishu_user_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '飞书用户标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "飞书用户标识",
+        "comment": "飞书用户标识"
+      },
+      "open_id": {
+        "definition": "open_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '飞书用户开放标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "飞书用户开放标识",
+        "comment": "飞书用户开放标识"
+      },
+      "name": {
+        "definition": "name VARCHAR(255) NOT NULL COMMENT '员工姓名'",
+        "type": "VARCHAR(255)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "员工姓名",
+        "comment": "员工姓名"
+      },
+      "employee_no": {
+        "definition": "employee_no VARCHAR(128) COMMENT '员工工号'",
+        "type": "VARCHAR(128)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "员工工号",
+        "comment": "员工工号"
+      },
+      "employee_type_id": {
+        "definition": "employee_type_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '员工类型枚举选项标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "员工类型枚举选项稳定标识",
+        "comment_0006": "员工类型枚举选项标识",
+        "comment": "员工类型枚举选项标识"
+      },
+      "employee_type_name": {
+        "definition": "employee_type_name VARCHAR(255) COMMENT '员工类型展示名称'",
+        "type": "VARCHAR(255)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "员工类型枚举当前展示值",
+        "comment_0006": "员工类型展示名称",
+        "comment": "员工类型展示名称"
+      },
+      "job_title": {
+        "definition": "job_title VARCHAR(255) COMMENT '员工职务'",
+        "type": "VARCHAR(255)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "员工当前职务",
+        "comment_0006": "员工职务",
+        "comment": "员工职务"
+      },
+      "leader_user_id": {
+        "definition": "leader_user_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '直属上级用户标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "直属上级对应的飞书用户稳定标识",
+        "comment_0006": "直属上级用户标识",
+        "comment": "直属上级用户标识"
+      },
+      "permission_role_id": {
+        "definition": "permission_role_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '权限角色选项标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "权限角色自定义字段选项标识",
+        "comment_0006": "权限角色选项标识",
+        "comment": "权限角色选项标识"
+      },
+      "permission_role_name": {
+        "definition": "permission_role_name VARCHAR(255) COMMENT '权限角色展示名称'",
+        "type": "VARCHAR(255)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "权限角色自定义字段展示值",
+        "comment_0006": "权限角色展示名称",
+        "comment": "权限角色展示名称"
+      },
+      "store_attribute_id": {
+        "definition": "store_attribute_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '门店属性选项标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "门店属性自定义字段选项标识",
+        "comment_0006": "门店属性选项标识",
+        "comment": "门店属性选项标识"
+      },
+      "store_attribute_name": {
+        "definition": "store_attribute_name VARCHAR(255) COMMENT '门店属性展示名称'",
+        "type": "VARCHAR(255)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "门店属性自定义字段展示值",
+        "comment_0006": "门店属性展示名称",
+        "comment": "门店属性展示名称"
+      },
+      "status": {
+        "definition": "status VARCHAR(32) NOT NULL COMMENT '员工状态'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "员工状态",
+        "comment": "员工状态"
+      },
+      "sync_quality": {
+        "definition": "sync_quality VARCHAR(32) NOT NULL COMMENT '员工同步质量'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "员工同步质量",
+        "comment": "员工同步质量"
+      },
+      "primary_department_id": {
+        "definition": "primary_department_id VARCHAR(191) COLLATE utf8mb4_bin COMMENT '主部门标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "主部门标识",
+        "comment": "主部门标识"
+      },
+      "primary_store_status": {
+        "definition": "primary_store_status VARCHAR(32) NOT NULL COMMENT '主门店解析状态'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "主门店解析状态",
+        "comment": "主门店解析状态"
+      },
+      "last_seen_at": {
+        "definition": "last_seen_at DATETIME COMMENT '最近一次从飞书看到的时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "最近一次从飞书看到的时间",
+        "comment": "最近一次从飞书看到的时间"
+      }
+    }
+  },
+  "store_code_reservation": {
+    "comment": "门店编码预留",
+    "columns": {
+      "store_code": {
+        "definition": "store_code VARCHAR(128) COLLATE utf8mb4_bin NOT NULL COMMENT '预留门店编码'",
+        "type": "VARCHAR(128) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "预留门店编码",
+        "comment": "预留门店编码"
+      },
+      "department_id": {
+        "definition": "department_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '占用该编码的部门标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "占用该编码的部门标识",
+        "comment": "占用该编码的部门标识"
+      },
+      "reserved_at": {
+        "definition": "reserved_at DATETIME NOT NULL COMMENT '编码预留时间'",
+        "type": "DATETIME",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "编码预留时间",
+        "comment": "编码预留时间"
+      }
+    }
+  },
+  "store_profile": {
+    "comment": "门店资料",
+    "columns": {
+      "department_id": {
+        "definition": "department_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '门店对应部门标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "门店对应部门标识",
+        "comment": "门店对应部门标识"
+      },
+      "is_store": {
+        "definition": "is_store BOOL NOT NULL COMMENT '是否标记为门店'",
+        "type": "BOOL",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "是否标记为门店",
+        "comment": "是否标记为门店"
+      },
+      "store_code": {
+        "definition": "store_code VARCHAR(128) COLLATE utf8mb4_bin COMMENT '门店编码'",
+        "type": "VARCHAR(128) COLLATE utf8mb4_bin",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "门店编码",
+        "comment": "门店编码"
+      },
+      "notes": {
+        "definition": "notes TEXT COMMENT '门店备注'",
+        "type": "TEXT",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "门店备注",
+        "comment": "门店备注"
+      }
+    }
+  },
+  "sync_job_detail": {
+    "comment": "同步任务明细",
+    "columns": {
+      "id": {
+        "definition": "id BIGINT NOT NULL COMMENT '任务明细自增标识' AUTO_INCREMENT",
+        "type": "BIGINT",
+        "nullable": false,
+        "autoincrement": true,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "任务明细自增标识",
+        "comment_0006": "任务明细自增标识",
+        "comment": "任务明细自增标识"
+      },
+      "job_id": {
+        "definition": "job_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '所属同步任务标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "所属同步任务标识",
+        "comment_0006": "所属同步任务标识",
+        "comment": "所属同步任务标识"
+      },
+      "object_type": {
+        "definition": "object_type VARCHAR(32) NOT NULL COMMENT '任务对象类型'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "任务对象类型",
+        "comment_0006": "任务对象类型",
+        "comment": "任务对象类型"
+      },
+      "object_id": {
+        "definition": "object_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '任务对象标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "任务对象稳定标识",
+        "comment_0006": "任务对象标识",
+        "comment": "任务对象标识"
+      },
+      "object_name": {
+        "definition": "object_name VARCHAR(255) COMMENT '任务对象名称快照'",
+        "type": "VARCHAR(255)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "任务对象名称快照",
+        "comment_0006": "任务对象名称快照",
+        "comment": "任务对象名称快照"
+      },
+      "status": {
+        "definition": "status VARCHAR(32) NOT NULL COMMENT '对象处理状态'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "对象处理状态",
+        "comment_0006": "对象处理状态",
+        "comment": "对象处理状态"
+      },
+      "error_code": {
+        "definition": "error_code VARCHAR(64) COMMENT '对象错误编码'",
+        "type": "VARCHAR(64)",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "对象错误编码",
+        "comment_0006": "对象错误编码",
+        "comment": "对象错误编码"
+      },
+      "error_message": {
+        "definition": "error_message TEXT COMMENT '对象错误摘要'",
+        "type": "TEXT",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "对象错误摘要",
+        "comment_0006": "对象错误摘要",
+        "comment": "对象错误摘要"
+      },
+      "attempt": {
+        "definition": "attempt INTEGER NOT NULL COMMENT '对象处理尝试次数'",
+        "type": "INTEGER",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "对象处理尝试次数",
+        "comment_0006": "对象处理尝试次数",
+        "comment": "对象处理尝试次数"
+      },
+      "started_at": {
+        "definition": "started_at DATETIME COMMENT '对象处理开始时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "对象处理开始时间",
+        "comment_0006": "对象处理开始时间",
+        "comment": "对象处理开始时间"
+      },
+      "finished_at": {
+        "definition": "finished_at DATETIME COMMENT '对象处理结束时间'",
+        "type": "DATETIME",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "对象处理结束时间",
+        "comment_0006": "对象处理结束时间",
+        "comment": "对象处理结束时间"
+      },
+      "change_log_id": {
+        "definition": "change_log_id BIGINT COMMENT '关联变更日志标识'",
+        "type": "BIGINT",
+        "nullable": true,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "关联变更日志标识",
+        "comment_0006": "关联变更日志标识",
+        "comment": "关联变更日志标识"
+      }
+    }
+  },
+  "sync_staging": {
+    "comment": "同步暂存数据",
+    "columns": {
+      "job_id": {
+        "definition": "job_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '所属同步任务标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "所属同步任务标识",
+        "comment": "所属同步任务标识"
+      },
+      "object_type": {
+        "definition": "object_type VARCHAR(32) NOT NULL COMMENT '暂存对象类型'",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "暂存对象类型",
+        "comment": "暂存对象类型"
+      },
+      "source_id": {
+        "definition": "source_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '来源对象标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "来源对象标识",
+        "comment": "来源对象标识"
+      },
+      "normalized_data": {
+        "definition": "normalized_data JSON NOT NULL COMMENT '规范化对象数据'",
+        "type": "JSON",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "规范化对象数据",
+        "comment": "规范化对象数据"
+      }
+    }
+  },
+  "employee_department": {
+    "comment": "员工部门关系",
+    "columns": {
+      "employee_id": {
+        "definition": "employee_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '员工标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "员工标识",
+        "comment": "员工标识"
+      },
+      "department_id": {
+        "definition": "department_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '部门标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "部门标识",
+        "comment": "部门标识"
+      },
+      "is_primary": {
+        "definition": "is_primary BOOL NOT NULL COMMENT '是否为主部门关系'",
+        "type": "BOOL",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "是否为主部门关系",
+        "comment": "是否为主部门关系"
+      },
+      "active": {
+        "definition": "active BOOL NOT NULL COMMENT '关系是否有效'",
+        "type": "BOOL",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "关系是否有效",
+        "comment": "关系是否有效"
+      }
+    }
+  },
+  "employee_store": {
+    "comment": "员工门店关系",
+    "columns": {
+      "employee_id": {
+        "definition": "employee_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '员工标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "员工标识",
+        "comment": "员工标识"
+      },
+      "store_id": {
+        "definition": "store_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL COMMENT '门店部门标识'",
+        "type": "VARCHAR(191) COLLATE utf8mb4_bin",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": "utf8mb4_bin",
+        "baseline_comment": "",
+        "comment_0006": "门店部门标识",
+        "comment": "门店部门标识"
+      },
+      "is_primary": {
+        "definition": "is_primary BOOL NOT NULL COMMENT '是否为主门店关系'",
+        "type": "BOOL",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "是否为主门店关系",
+        "comment": "是否为主门店关系"
+      },
+      "path": {
+        "definition": "path JSON NOT NULL COMMENT '门店路径标识列表'",
+        "type": "JSON",
+        "nullable": false,
+        "autoincrement": false,
+        "default": null,
+        "collation": null,
+        "baseline_comment": "",
+        "comment_0006": "门店路径标识列表",
+        "comment": "门店路径标识列表"
+      }
+    }
+  }
+}

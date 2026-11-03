@@ -11,9 +11,40 @@ class Candidate:
     coverage_status: str = "unknown"
     full: bool = False
     collection_started_at: str | None = None
+    initialization_proof: dict | None = None
 
 
-def normalize_user(raw):
+def _custom_value(raw, field_id, allow_text=False):
+    """读取飞书 custom_attrs 的单选值，保留未知选项而不静默清空。"""
+    if not field_id:
+        return None, None, False
+    values = raw.get('custom_attrs') or raw.get('custom_fields') or []
+    if isinstance(values, dict):
+        values = [{'id': key, 'value': value} for key, value in values.items()]
+    for item in values if isinstance(values, list) else []:
+        if not isinstance(item, dict) or str(item.get('id') or item.get('field_id')) != str(field_id):
+            continue
+        value = item.get('value')
+        if allow_text and item.get('type') == 'TEXT':
+            if not isinstance(value, dict) or 'text' not in value:
+                raise RuntimeError('FEISHU_CUSTOM_TEXT_UNREADABLE')
+            text = value['text']
+            if text is not None and (not isinstance(text, str) or len(text) > 255):
+                raise RuntimeError('FEISHU_CUSTOM_TEXT_VALUE_UNSUPPORTED')
+            return None, text, True
+        if isinstance(value, dict):
+            return value.get('id') or value.get('option_id'), value.get('option_value') or value.get('name') or value.get('text'), True
+        if isinstance(value, list):
+            if len(value) > 1:
+                raise RuntimeError('FEISHU_CUSTOM_ENUM_VALUE_UNSUPPORTED')
+            value = value[0] if value else None
+        if isinstance(value, dict):
+            return value.get('id') or value.get('option_id'), value.get('name') or value.get('text'), True
+        return (str(value) if value not in (None, '') else None), None, True
+    return None, None, False
+
+
+def normalize_user(raw, custom_mappings=None, employee_type_options=None):
     status=raw.get('status')
     if not isinstance(status,dict) or not any(type(status.get(key)) is bool for key in ('is_resigned','is_exited')):
         raise RuntimeError('FEISHU_STATUS_UNREADABLE')
@@ -27,7 +58,20 @@ def normalize_user(raw):
     primaries = {order["department_id"] for order in (raw.get("orders") or []) if isinstance(order,dict) and order.get("is_primary_dept") is True and order.get("department_id")} if relations_readable else set()
     primary = next(iter(primaries)) if len(primaries) == 1 else None
     inconsistent = len(primaries) > 1 or (primary is not None and primary not in departments)
-    return {"id": identifier, "feishu_user_id": identifier, "open_id": raw.get("open_id"), "name": raw["name"], "employee_no": raw.get("employee_no"), "status": "inactive" if inactive else "active", "primary_department_id": primary if not inconsistent else None, "sync_quality": "pending_verification" if not relations_readable else "inconsistent" if inconsistent else "complete", "department_ids": departments}
+    type_value = raw.get('employee_type')
+    type_id = type_value.get('id') if isinstance(type_value, dict) else raw.get('employee_type_id')
+    type_name = type_value.get('name') if isinstance(type_value, dict) else raw.get('employee_type_name')
+    if type_id and employee_type_options and type_id not in employee_type_options:
+        type_name, type_quality = type_name, 'unknown_option'
+    else:
+        type_quality = None
+    mappings = custom_mappings or {}
+    role_id, role_name, role_present = _custom_value(raw, mappings.get('permission_role'))
+    store_id, store_name, store_present = _custom_value(raw, mappings.get('store_attribute'), allow_text=True)
+    quality = 'pending_verification' if not relations_readable else 'inconsistent' if inconsistent else 'complete'
+    if type_quality or (mappings.get('permission_role') and not role_present) or (mappings.get('store_attribute') and not store_present):
+        quality = 'pending_verification'
+    return {"id": identifier, "feishu_user_id": identifier, "open_id": raw.get("open_id"), "name": raw["name"], "employee_no": raw.get("employee_no"), "employee_type_id": type_id, "employee_type_name": type_name, "job_title": raw.get('job_title'), "leader_user_id": raw.get('leader_user_id'), "permission_role_id": role_id, "permission_role_name": role_name, "store_attribute_id": store_id, "store_attribute_name": store_name, "status": "inactive" if inactive else "active", "primary_department_id": primary if not inconsistent else None, "sync_quality": quality, "department_ids": departments}
 
 
 def normalize_department(raw):
@@ -38,14 +82,16 @@ def normalize_department(raw):
     parent_readable=isinstance(raw.get('parent_department_id'),str) and bool(raw['parent_department_id'])
     inactive=raw['status']['is_deleted']
     if not parent_readable and not inactive: raise RuntimeError('FEISHU_PARENT_UNREADABLE')
-    value={"id": identifier, "feishu_department_id": identifier, "parent_id": raw['parent_department_id'] if parent_readable else None, "name": raw["name"], "status": "inactive" if inactive else "active", "sync_quality": "complete" if parent_readable else 'pending_verification', "is_virtual_root": False}
+    value={"id": identifier, "feishu_department_id": identifier, "parent_id": raw['parent_department_id'] if parent_readable else None, "name": raw["name"], "leader_user_id": raw.get('leader_user_id'), "status": "inactive" if inactive else "active", "sync_quality": "complete" if parent_readable else 'pending_verification', "is_virtual_root": False}
     if not parent_readable:value['parent_unreadable']=True
     return value
 
 
 class Collector:
-    def __init__(self, api, coverage_verified=False, progress=None):
+    def __init__(self, api, coverage_verified=False, progress=None, custom_mappings=None, employee_type_options=None):
         self.api, self.coverage_verified = api, coverage_verified
+        self.custom_mappings = custom_mappings or {}
+        self.employee_type_options = employee_type_options
         self.progress=progress
 
     def _progress(self,phase,result):
@@ -102,7 +148,7 @@ class Collector:
         try:
             raw=self.api.detail('user',identifier)
             if raw.get('user_id')!=identifier: raise RuntimeError('FEISHU_ID_MISMATCH')
-            result.employees[identifier] = normalize_user(raw)
+            result.employees[identifier] = normalize_user(raw, self.custom_mappings, self.employee_type_options)
         except RuntimeError:
             result.pending.append(("employee", identifier))
 

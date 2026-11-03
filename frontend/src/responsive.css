@@ -1,8 +1,8 @@
 .tree-trigger { display: none; }
 .tree-hit { color: #1677ff; font-weight: 600; }
 .store-change { padding: 16px 0; border-bottom: 1px solid #e7eaf0; }
-html, body, #root, .app-shell, .app-shell > .ant-layout { max-width: 100%; overflow-x: hidden; }
-.ant-layout-content, .org-grid, .org-grid > *, .ant-card { min-width: 0; }
+html, body, #root { max-width: 100%; overflow-x: hidden; }
+.org-grid, .org-grid > *, .ant-card { min-width: 0; }
 .ant-table-wrapper { max-width: 100%; }
 @media (max-width: 900px) {
   .tree-trigger { display: inline-flex; }

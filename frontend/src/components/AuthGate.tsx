@@ -3,8 +3,9 @@ import { Button, Result, Space, Spin } from 'antd';
 import { ApartmentOutlined } from '@ant-design/icons';
 import { AUTH_FAILURE_EVENT, setCsrfToken } from '../services/http';
 import { useResource } from '../services/useResource';
+import InitializationPage from '../pages/InitializationPage';
 
-interface AdminSession { open_id: string; csrf_token: string }
+interface AdminSession { open_id: string; csrf_token: string; initialization_complete: boolean }
 const SessionContext = createContext<AdminSession | null>(null);
 export const useAdminSession = () => useContext(SessionContext);
 
@@ -20,7 +21,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(AUTH_FAILURE_EVENT, recheck);
   }, [session.reload]);
 
-  if (session.data) return <SessionContext.Provider value={session.data}>{children}</SessionContext.Provider>;
+  if (session.data) return <SessionContext.Provider value={session.data}>{session.data.initialization_complete === true ? children : <InitializationPage />}</SessionContext.Provider>;
   if (session.loading || !session.error) return <div style={{ padding: '25vh 24px', textAlign: 'center' }}><Spin size="large" /><p>正在验证管理员身份…</p></div>;
   const needsLogin = session.error.status === 401;
   const forbidden = session.error.status === 403;

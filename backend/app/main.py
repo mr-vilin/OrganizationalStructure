@@ -1,6 +1,7 @@
 from datetime import datetime
+import logging
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy.exc import SQLAlchemyError, OperationalError, InterfaceError, DisconnectionError, TimeoutError as SQLTimeoutError
@@ -9,13 +10,26 @@ from pydantic import BaseModel
 
 from .config import Settings, get_settings
 from .dependencies import Runtime, get_admin_identity, get_public_identity, get_read_service, get_runtime, require_admin_write
-from .persistence.database import database_ready
+from .persistence.database import DatabaseReadinessError, database_ready
 from .services import ReadService
 from .admin.router import router as admin_router
+from .capabilities.router import router as capability_router
+from .capabilities.errors import CapabilityError
+from .version import product_build_info
+from .initialization.router import router as initialization_router
+from .initialization.validation import InitializationFailure
 
 
 app = FastAPI(title="组织架构维护系统", version="1.0.0")
 app.include_router(admin_router)
+app.include_router(capability_router)
+app.include_router(initialization_router)
+log = logging.getLogger("organization.api")
+
+
+@app.exception_handler(InitializationFailure)
+async def initialization_error_handler(request: Request, exc: InitializationFailure):
+    return JSONResponse({'error': {'code': exc.code, 'message': exc.message, 'fields': exc.issues}}, status_code=409)
 
 
 def error(code: str, message: str, status: int, *, fields: list | None = None) -> JSONResponse:
@@ -23,6 +37,11 @@ def error(code: str, message: str, status: int, *, fields: list | None = None) -
     if fields:
         body["error"]["fields"] = fields
     return JSONResponse(body, status_code=status)
+
+
+@app.exception_handler(CapabilityError)
+async def capability_error_handler(request: Request, exc: CapabilityError):
+    return JSONResponse(exc.to_dict(), status_code=exc.status)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -34,6 +53,7 @@ async def http_error_handler(request: Request, exc: HTTPException):
 @app.exception_handler(SQLAlchemyError)
 async def database_error_handler(request: Request, exc: SQLAlchemyError):
     # 不序列化或记录异常原文，原文可能包含 SQL、参数和数据库地址。
+    log.error("数据库操作失败 path=%s error_type=%s", request.url.path, type(exc).__name__)
     unavailable=isinstance(exc,(OperationalError,InterfaceError,DisconnectionError,SQLTimeoutError))
     return error('DATABASE_UNAVAILABLE' if unavailable else 'DATABASE_ERROR','数据库暂时不可用' if unavailable else '数据库操作失败',503 if unavailable else 500)
 
@@ -64,17 +84,23 @@ def live():
     return {"data": {"status": "ok"}, "meta": {}}
 
 
+@app.get('/admin/api/system/version')
+def system_version(response: Response, identity=Depends(get_admin_identity)):
+    response.headers['Cache-Control'] = 'no-store'
+    return {'data': product_build_info(), 'meta': {}}
+
+
 @app.get("/health/ready")
 def ready(runtime: Runtime | None = Depends(get_runtime)):
     if runtime is None:
         raise HTTPException(503, {"code": "DATABASE_NOT_CONFIGURED", "message": "数据库尚未配置"})
     try:
-        database_ready(runtime.engine)
-        settings = get_settings()
-        runtime.identities.initialize_allowlist_once(settings.admin_open_ids, datetime.utcnow())
+        report = database_ready(runtime.engine)
+    except DatabaseReadinessError as exc:
+        raise HTTPException(503, {"code": exc.code, "message": exc.message})
     except Exception:
         raise HTTPException(503, {"code": "DATABASE_UNAVAILABLE", "message": "数据库不可用"})
-    return {"data": {"database": "ready", "schema": "reachable"}, "meta": {}}
+    return {"data": report | {"initialization": "independent"}, "meta": {}}
 
 
 @app.get("/admin/auth/login")
@@ -101,9 +127,12 @@ def oauth_callback(code: str | None = None, state: str | None = None, org_oauth_
         return error('IDENTITY_NOT_CONFIGURED','飞书登录尚未配置',503)
     try:
         if not code: raise ValueError('OAUTH_CODE_MISSING')
-        session,csrf=OAuthService(runtime.sessions,settings,FeishuClient(settings.feishu_app_id,settings.feishu_app_secret.get_secret_value())).complete(state,org_oauth_state,code)
-        response=RedirectResponse('/organization',status_code=302)
-        response.set_cookie('org_session',session.id,max_age=43200,httponly=True,secure=True,samesite='lax')
+        session,csrf,session_token=OAuthService(runtime.sessions,settings,FeishuClient(settings.feishu_app_id,settings.feishu_app_secret.get_secret_value())).complete(state,org_oauth_state,code)
+        from .persistence.models import DatasetState
+        with runtime.sessions() as db:
+            initialized = db.get(DatasetState, 1).initialization_status == 'complete'
+        response=RedirectResponse('/organization' if initialized else '/initialize',status_code=302)
+        response.set_cookie('org_session',session_token,max_age=43200,httponly=True,secure=True,samesite='lax')
         response.set_cookie('org_csrf',csrf,max_age=43200,httponly=True,secure=True,samesite='strict',path='/admin/auth')
     except ValueError as exc:
         response=error(str(exc) if str(exc) in {'OAUTH_CODE_MISSING','OAUTH_STATE_INVALID','OAUTH_IDENTITY_MISMATCH','ADMIN_NOT_ALLOWED','LOGIN_IDENTITY_MISMATCH','EMPLOYEE_INACTIVE'} else 'OAUTH_FAILED','登录校验失败，请重新发起登录',403)
@@ -115,13 +144,17 @@ def oauth_callback(code: str | None = None, state: str | None = None, org_oauth_
 
 
 @app.get('/admin/auth/session')
-def auth_session(org_csrf: str | None = Cookie(default=None), identity=Depends(get_admin_identity), settings=Depends(get_settings)):
+def auth_session(org_csrf: str | None = Cookie(default=None), identity=Depends(get_admin_identity), settings=Depends(get_settings), runtime=Depends(get_runtime)):
     import hashlib, hmac
     secret=settings.session_secret.get_secret_value() if settings.session_secret else ''
     digest=hmac.new(secret.encode(),(org_csrf or '').encode(),hashlib.sha256).hexdigest()
     if not org_csrf or not hmac.compare_digest(digest,identity.csrf_hash):
         raise HTTPException(403,{'code':'CSRF_REQUIRED','message':'登录会话缺少有效 CSRF，请重新登录'})
-    return JSONResponse({'data':{'open_id':identity.open_id,'csrf_token':org_csrf},'meta':{}},headers={'Cache-Control':'no-store'})
+    from .persistence.models import DatasetState
+    with runtime.sessions() as db:
+        state = db.get(DatasetState, 1)
+        initialized = state is not None and state.initialization_status == 'complete'
+    return JSONResponse({'data':{'open_id':identity.open_id,'csrf_token':org_csrf,'initialization_complete':initialized},'meta':{}},headers={'Cache-Control':'no-store'})
 
 
 @app.post("/admin/auth/logout")
@@ -193,15 +226,16 @@ def store_employees(store_id: str, membership: str = Query("all", pattern="^(all
 class JobRequest(BaseModel):
     type: str
     root_department_id: str | None = None
+    note: str | None = None
 
 
 @app.post("/admin/api/sync/jobs", status_code=202)
 def submit_job(body: JobRequest, authorization=Depends(require_admin_write), runtime: Runtime | None = Depends(get_runtime)):
     from datetime import datetime, timezone
-    if body.type not in {"full", "subtree", "reconcile"} or (body.type == "subtree" and not body.root_department_id):
+    if body.type not in {"initialize", "full", "subtree", "reconcile"} or (body.type == "subtree" and not body.root_department_id):
         raise HTTPException(422, {"code": "INVALID_JOB_SCOPE", "message": "同步任务类型或范围无效"})
     identity, _ = authorization
-    job, reused = runtime.jobs.submit(body.type, body.root_department_id, f"admin:{identity.open_id}", datetime.now(timezone.utc))
+    job, reused = runtime.jobs.submit(body.type, body.root_department_id, f"admin:{identity.open_id}", datetime.now(timezone.utc), body.note)
     return {"data": {"job_id": job.id, "status": job.status, "reused": reused}, "meta": {}}
 
 

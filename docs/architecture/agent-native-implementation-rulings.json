@@ -1,0 +1,752 @@
+[
+  {
+    "id": "C34",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 34,
+    "kind": "程序性引用",
+    "text": "| Producer | Consumer | Shared files or interfaces | Finding and ruling |",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "C36",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 36,
+    "kind": "实施裁决",
+    "text": "| Task 1 | Tasks 3, 4, 5 | AgentContext, Observation, CapabilityResult, errors | Consistent. Ruling: keep immutable dataclasses and stable error codes as the source of truth |",
+    "decision_zh": "不可变数据类与稳定错误码作为共享契约的事实源。",
+    "reversal_cost_zh": "调整共享模型及其消费者，重新验证序列化和错误兼容性。",
+    "cost_basis": "控制器核验的最小撤回范围"
+  },
+  {
+    "id": "C37",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 37,
+    "kind": "实施裁决",
+    "text": "| Task 2 | Task 3 | OperationReceipt ORM and migration 0007 | Consistent. Ruling: one unique actor/environment/idempotency constraint; no changes to existing tables |",
+    "decision_zh": "回执以 actor/environment/idempotency 唯一，不改已有业务表。",
+    "reversal_cost_zh": "调整新表约束、仓储及幂等并发测试。",
+    "cost_basis": "控制器核验的最小撤回范围"
+  },
+  {
+    "id": "C38",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 38,
+    "kind": "实施裁决",
+    "text": "| Task 3 | Task 4 | ReceiptRepository and ObservationService | Consistent. Ruling: methods receive caller-owned Session and never commit independently |",
+    "decision_zh": "仓储与观察服务接收调用方 Session，不自行提交。",
+    "reversal_cost_zh": "调整事务入口及调用链，重新验证原子性。",
+    "cost_basis": "控制器核验的最小撤回范围"
+  },
+  {
+    "id": "C39",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 39,
+    "kind": "实施裁决",
+    "text": "| Task 4 | Task 5 | OrganizationCapabilities methods | Consistent. Ruling: internal router exposes only the fixed facade methods |",
+    "decision_zh": "内部路由只暴露固定能力 facade 方法。",
+    "reversal_cost_zh": "修改内部路由与鉴权测试。",
+    "cost_basis": "控制器核验的最小撤回范围"
+  },
+  {
+    "id": "C40",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 40,
+    "kind": "实施裁决",
+    "text": "| Task 5 | Plan 2 | /internal/capabilities and service token | Consistent with the approved independent MCP adapter. Ruling: internal HTTP is the boundary; MCP never imports ORM |",
+    "decision_zh": "内部 HTTP 是 MCP 边界；MCP 不导入 ORM。",
+    "reversal_cost_zh": "重做适配层集成和边界测试。",
+    "cost_basis": "控制器核验的最小撤回范围"
+  },
+  {
+    "id": "C41",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 41,
+    "kind": "实施裁决",
+    "text": "| Task 6 | Plans 2 and 3 | MySQL migration and capability commands | Consistent. Ruling: use only _test databases and keep real Feishu outside ordinary CI |",
+    "decision_zh": "数据库验收只访问 _test 库；真实飞书不进入普通 CI。",
+    "reversal_cost_zh": "调整测试环境与外部服务验收流程，仍需独立生产授权。",
+    "cost_basis": "控制器核验的最小撤回范围"
+  },
+  {
+    "id": "C43",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 43,
+    "kind": "程序性引用",
+    "text": "## Rulings",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "C45",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 45,
+    "kind": "实施裁决",
+    "text": "- Ruling: Keep the new operation receipt as a separate logical table because the existing SyncJob and ChangeLog cannot uniquely represent a read/preview/write operation chain. Cost if wrong: one migration and repository layer must be revised before MCP work.",
+    "decision_zh": "新增独立逻辑操作回执表，任务与变更日志无法唯一代表整条操作链。",
+    "reversal_cost_zh": "修改一份迁移和回执仓储层。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C46",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 46,
+    "kind": "实施裁决",
+    "text": "- Ruling: Preserve current SyncJob statuses and add Observation execution labels rather than renaming database states. Cost if wrong: MCP and evaluator contracts need a compatibility rewrite.",
+    "decision_zh": "保留 SyncJob 状态，新增 Observation 执行状态。",
+    "reversal_cost_zh": "修改 MCP 与评测契约的兼容映射。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C47",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 47,
+    "kind": "实施裁决",
+    "text": "- Ruling: Add an internal HTTP boundary before MCP implementation. Cost if wrong: MCP would need a different transport integration and tests would not exercise the production service boundary.",
+    "decision_zh": "先建立内部 HTTP 能力边界，再实现 MCP。",
+    "reversal_cost_zh": "调整 MCP 传输集成，补验真实生产服务边界。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C75",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 75,
+    "kind": "实施裁决",
+    "text": "Ruling: Split Task 4 into 4A (transaction-aware store/job entry points and asynchronous receipt finalization) and 4B (OrganizationCapabilities facade, runtime policy, integration) — current StoreAdminService.apply and SqlSyncJobRepository.submit/retry independently own their sessions, and Publisher owns the asynchronous commit, so the plan file list is insufficient for its binding atomicity and commit-version evidence constraints. Extend the allowed files minimally to stores/service.py, persistence/repositories.py, sync/publisher.py and focused tests; retain the current public/admin service signatures as transaction-owning wrappers. Cost if wrong: revise the internal Session entry points and async receipt integration before MCP, without changing external HTTP contracts.",
+    "decision_zh": "能力 Task 4 拆为事务/异步回执集成 4A 与 facade/策略 4B；最小扩展门店、任务、Publisher 文件，原公开服务入口保留。",
+    "reversal_cost_zh": "修改内部 Session 入口与异步回执集成，不变更外部 HTTP 契约。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C76",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 76,
+    "kind": "实施裁决",
+    "text": "Ruling: A production confirmation is accepted only through trusted AgentContext.approved until an explicit token verifier is implemented; an arbitrary model-supplied approval_token never authorizes a write — the approved design and MCP plan explicitly disallow treating a token-shaped string as confirmation. Cost if wrong: adjust the trusted approval adapter, preserving the denied-by-default business boundary.",
+    "decision_zh": "生产写批准只接受可信 AgentContext.approved；模型传入 approval_token 不构成批准。",
+    "reversal_cost_zh": "替换可信批准适配器，保持默认拒绝。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C78",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 78,
+    "kind": "实施裁决",
+    "text": "Ruling: Task 4B may add an explicit keyword-only internal result classification (write_operation, default preserving existing guards) to CapabilityResult, omitted from serialized output — current Task 1 validation treats every submitted observation as a write, which cannot express a successful read with operation_id=None without incorrectly emitting evaluator-only verified. Read results may state completed request execution with no write receipt; actual writes still require operation_id. Cost if wrong: revise the internal constructor classification; the fixed four-field wire contract remains unchanged.",
+    "decision_zh": "CapabilityResult 内部增加不序列化的 write_operation，区分完成读取与真实写入。",
+    "reversal_cost_zh": "调整内部构造分类，不变更固定 wire 字段。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C82",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 82,
+    "kind": "程序性引用",
+    "text": "Task 4A: implementation dispatch base 9870932; brief task-4a-brief.md; original Task 4 split ruling above applies.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "C83",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 83,
+    "kind": "实施裁决",
+    "text": "Ruling: Extend Task 4A minimally to sync/worker.py::_fail_job — actual Worker exhaustion writes SyncJob.failed directly rather than using SqlSyncJobRepository.mark_failed, so repository-only integration would leave real failure receipts accepted. Use WorkerLease→DatasetState→job→receipt locks and finalize only terminal failed, retaining queued backoff. Cost if wrong: revise this internal failure hook and lock-order tests; no external API or retry-policy change.",
+    "decision_zh": "真实 Worker 耗尽重试时终结失败回执；锁序为租约→数据状态→任务→回执，排队退避不终结。",
+    "reversal_cost_zh": "修改内部失败钩子及锁序测试，不改重试策略。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C85",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 85,
+    "kind": "程序性引用",
+    "text": "Task 4A: implementer /root/transaction_receipt_integration; report task-4a-report.md; worker scope ruling and StoreApplyResult interface recorded in task-4a/task-4b briefs.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "C91",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 91,
+    "kind": "实施裁决",
+    "text": "Ruling: Allow Task 4A fix round 1 to introduce the planned Task 6 integration file test_capability_mysql.py early for the named RR two-transaction regression — this tests the newly exposed caller-transaction guarantee directly; SQLite cannot establish InnoDB Read View behavior. Task 6 extends the file instead of recreating it. Cost if wrong: move the focused integration test into Task 6; no production contract changes.",
+    "decision_zh": "提前增加真实 MySQL 双事务回归，验证 RR Read View；后续 Task 6 扩展同一文件。",
+    "reversal_cost_zh": "移动测试归属，不改生产契约。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C92",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 92,
+    "kind": "实施裁决",
+    "text": "Ruling: New Agent store-apply calls must bind expected_epoch as well as expected_version (keyword-only extension, preserving the planned first five arguments) — a restored dataset can reuse the same integer version, so version alone cannot prove that the preview belongs to the current dataset. Require the epoch on this new capability/internal/MCP contract; existing admin/public HTTP envelopes are outside this change. Cost if wrong: revise the new Agent input schema and tests before rollout; no existing client contract is removed.",
+    "decision_zh": "Agent 门店 apply 同时绑定 expected_epoch 与 expected_version，避免恢复后版本号重用。",
+    "reversal_cost_zh": "上线前调整新增输入 schema 与测试，不移除现有客户端契约。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C94",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 94,
+    "kind": "实施裁决",
+    "text": "Ruling: Add an L0 get_operation capability and later HTTP/MCP lookup by operation_id or the caller-scoped idempotency_key — a lost write response can lose the server-generated operation_id, and the approved rule requires observation before another write. This fills the observation path without re-submitting a mutation; queries are constrained to trusted actor_id/environment. Cost if wrong: adjust one new read schema/endpoint/tool; persisted receipts and existing capabilities stay compatible.",
+    "decision_zh": "新增 L0 get_operation，按 operation_id 或主体范围内幂等键观察丢失响应，禁止以重写代替查询。",
+    "reversal_cost_zh": "调整一个新增读取 schema、端点与工具，回执保持兼容。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C98",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 98,
+    "kind": "程序性引用",
+    "text": "Task 4B: implementation dispatch base 1e06eb1; brief task-4b-brief.md contains controller rulings and formal interfaces from task-4a-report.md.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "C102",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 102,
+    "kind": "实施裁决",
+    "text": "Ruling: Capture failed job audit_ids in the original terminal transaction (minimal ReceiptRepository extension) instead of lazily fetching all later job logs — retries reuse job_id and would otherwise contaminate the historical failure evidence. Cost if wrong: adjust the internal failure-summary helper and compatibility tests; no new schema or public API change.",
+    "decision_zh": "失败任务的 audit_ids 在原终态事务冻结，避免同 job 重试污染历史证据。",
+    "reversal_cost_zh": "调整失败摘要辅助方法和兼容测试，不增加结构。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C104",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 104,
+    "kind": "实施裁决",
+    "text": "Ruling: Task 6 must explicitly set the new operation_receipt table collation to utf8mb4_0900_as_cs in ORM and revision 0007, preserving all SOURCE_ID utf8mb4_bin columns, and make new MySQL connection settings explicit/observable — both production and test Compose prescribe utf8mb4_0900_as_cs, while the new table currently relies on server defaults, contrary to AGENTS.md. Do not alter any existing table collation or execute production migrations; provide preflight/verification/rollback notes. Cost if wrong: revise only the new-table options and connection setup before rollout; existing column definitions and constraints stay unchanged.",
+    "decision_zh": "新 operation_receipt 表显式使用 utf8mb4_0900_as_cs，来源 ID 保留 utf8mb4_bin；显式设置并验证 MySQL 会话配置。",
+    "reversal_cost_zh": "上线前修改新表选项与连接设置，不转换已有表或列。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C106",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 106,
+    "kind": "实施裁决",
+    "text": "Ruling: Try an official MySQL 8.4.11 portable Windows instance inside the ignored worktree runtime directory, bound only to 127.0.0.1 with a dedicated _test database and no Windows service installation — Docker is unavailable, but a disposable local process can exercise the same InnoDB/RR guarantees and avoid leaving real acceptance untested. Cost if wrong: stop/remove only this disposable runtime and retain the documented Compose acceptance path; no production database or system service is changed.",
+    "decision_zh": "Docker 不可用时，在忽略目录运行官方 MySQL 8.4.11 便携实例，仅绑定回环，不安装系统服务。",
+    "reversal_cost_zh": "停止并移除该一次性运行环境，保留 Compose 验收路径。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C117",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 117,
+    "kind": "实施裁决",
+    "text": "Ruling: Include config.py in Task5's minimal allowed changes — its file list omits the file but Step3 explicitly requires agent_service_token: SecretStr | None, and fail-closed authentication depends on that setting. Cost if wrong: move only the token setting to the existing configuration boundary; no public HTTP or business schema changes.",
+    "decision_zh": "内部鉴权所需配置项 agent_service_token 纳入能力 Task 5 最小文件范围。",
+    "reversal_cost_zh": "移动该配置项至既有配置边界，不改公共 API 或业务结构。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C124",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 124,
+    "kind": "实施裁决",
+    "text": "Ruling: Extend Task6 minimally to SqlSyncJobRepository.submit_in_session and the capability request_sync call, adding an optional keyword-only trigger_source supplied as validated context.actor_type (human_agent/ci_agent), while keeping the complete actor_id in requested_by/receipt and preserving existing callers' default trigger-source behavior — real MySQL rejects valid long Agent IDs copied into VARCHAR32 trigger_source (DataError1406), so shortening test IDs would conceal a production failure. Do not alter the column or overwrite the original trigger when reusing/retrying a job. Cost if wrong: revise this internal source-classification argument and regression tests; existing API signatures/DDL and full actor audit remain intact.",
+    "decision_zh": "同步任务 trigger_source 使用经验证的 actor_type，完整 actor_id 保留在 requested_by/回执；重用或重试不覆盖原触发来源。",
+    "reversal_cost_zh": "修改内部可选参数与回归测试，保留字段长度和完整身份审计。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C125",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 125,
+    "kind": "实施裁决",
+    "text": "Ruling: Treat the three approved dependent plans as one branch delivery: keep every per-task spec/quality gate and run one most-capable whole-branch review after capability, MCP and Evaluation tasks are all complete, rather than re-reviewing the same cumulative branch three times — the broad review is meant to assess final cross-layer behavior, which is unavailable after the first subsystem alone. Retain each plan's separate workspace/ledger until that unified final gate, then collect all rulings before cleanup. Cost if wrong: add a subsystem-wide review before release; no task gate, implementation scope or final branch review is removed.",
+    "decision_zh": "三份依赖计划作为一次分支交付；逐任务双门禁保留，最后执行一次统一全分支评审，完成前不清理台账。",
+    "reversal_cost_zh": "发布前补一次子系统全审；不删除任务门禁或统一终审。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C128",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 128,
+    "kind": "实施裁决",
+    "text": "Ruling: Include backend/scripts/mysql_acceptance.py as Task6's repeatable acceptance entry — the task requires actual-target preflight, explicit connection/schema verification, migration/test commands and secret-free evidence; one small wrapper centralizes the validated _test URL and captures/redacts subprocess output instead of duplicating credential-handling snippets across docs. Cost if wrong: remove the wrapper and replace its documented invocations with equivalent reviewed commands; no production runtime behavior depends on it.",
+    "decision_zh": "增加 mysql_acceptance.py，集中实际目标预检、迁移/测试命令及子进程输出脱敏。",
+    "reversal_cost_zh": "移除包装器并改用等效且经审查的命令，生产运行不依赖它。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "C131",
+    "source": ".superpowers/sdd/2026-10-13-capability-observation-layer/progress.md",
+    "line": 131,
+    "kind": "程序性引用",
+    "text": "Capability plan: all tasks complete; unified final whole-branch review pending after MCP/Evaluation per cross-plan ruling. Keep this plan workspace and deferred minors for that gate.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "M20",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 20,
+    "kind": "程序性引用",
+    "text": "| 1 | SDK pin, package/entry, build_server and fixed-tool discovery test | Conflict: server.py omitted from Files; fixed-tool test precedes Task4 registration; entry depends on Task2/3 absent modules. Ruling below narrows stage1 to real SDK discovery and entry skeleton, completes live binding in Task4. |",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "M23",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 23,
+    "kind": "程序性引用",
+    "text": "| 4 | 14 tools, schemas, policy and HTTP mapping | Carry preceding get_operation ruling: 15 tools; apply binds epoch and version. SDK-generated schema and real discovery replace illustrative tool_names helper. |",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "M40",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 40,
+    "kind": "程序性引用",
+    "text": "## Rulings",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "M41",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 41,
+    "kind": "实施裁决",
+    "text": "- Ruling: Task1 creates server.py despite the omitted Files row, verifies real SDK initialize/discovery and CLI help/fail-closed skeleton, and defers fixed-tool discovery/live dependency wiring to Task4 — those consumers require Task2/3 implementations and actual Task4 registration; do not add placeholder business tools merely to pass an early name test. Cost if wrong: adjust the server scaffold and stage1/4 tests; final tool contract unchanged.",
+    "decision_zh": "MCP Task 1 补 server.py，验证官方 SDK 初始化/发现与入口骨架；真实工具绑定待依赖完成后放到 Task 4。",
+    "reversal_cost_zh": "调整骨架和分阶段测试，最终工具契约不变。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M42",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 42,
+    "kind": "实施裁决",
+    "text": "- Ruling: The final catalog has 15 tools including L0 get_operation, and apply_store_changes requires expected_epoch plus expected_version — carries the already-approved capability observation and restore-safe version rulings through MCP. Cost if wrong: revise only the new MCP schema/catalog and client tests before rollout.",
+    "decision_zh": "最终目录包含 get_operation 共 15 工具；门店 apply 同时要求 epoch 与 version。",
+    "reversal_cost_zh": "上线前调整新增 MCP schema、目录和客户端测试。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M43",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 43,
+    "kind": "实施裁决",
+    "text": "- Ruling: Prefer the verified current official SDK mcp==2.2.0 with exact runtime/transitive pins and platform markers; use its real API rather than the plan's illustrative tool_names helper — current official release and Python metadata support project Python3.11+, while pre-existing httpx remains the internal HTTP client. If an actual dependency conflict appears, report evidence before selecting a maintenance SDK. Cost if wrong: switch the precise SDK pin and transport/confirmation integration, then rerun adapter compatibility tests.",
+    "decision_zh": "锁定官方 mcp==2.2.0 及传递依赖，使用真实 SDK API。",
+    "reversal_cost_zh": "更换精确 SDK 版本与传输/确认集成，重跑兼容测试。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M44",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 44,
+    "kind": "实施裁决",
+    "text": "- Ruling: Introduce a separate ORG_MCP_SERVICE_TOKEN (SecretStr) for inbound MCP access, retaining ORG_AGENT_SERVICE_TOKEN solely for trusted sidecar-to-capability requests — a model-facing MCP client must not receive the backend identity-assertion credential. Default both fail closed, do not inject DB/Feishu credentials into sidecar. Cost if wrong: revise the one extra credential/deployment setting, preserving least privilege.",
+    "decision_zh": "入站 MCP 使用独立 ORG_MCP_SERVICE_TOKEN，后端 ORG_AGENT_SERVICE_TOKEN 仅供可信 sidecar 声明身份；两者默认拒绝。",
+    "reversal_cost_zh": "调整新增凭据和部署配置，保持最小权限。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M45",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 45,
+    "kind": "实施裁决",
+    "text": "- Ruling: Bind AgentPrincipal to trusted server configuration/authenticated service identity; never take actor/environment/approved from tool arguments or arbitrary client headers. CI cases may construct a dedicated configured test server/principal per run/case. Cost if wrong: replace the principal resolver for a future multi-user identity provider; capability and tool contracts remain compatible.",
+    "decision_zh": "AgentPrincipal 绑定可信服务配置/认证身份，不采信工具参数或任意客户端身份/批准头。",
+    "reversal_cost_zh": "未来替换多用户身份解析器，能力与工具契约保持兼容。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M46",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 46,
+    "kind": "实施裁决",
+    "text": "- Ruling: Production L2 confirmation uses official MCP elicitation/Resolve from the trusted host; accept only explicit accept with strict confirmed=true, deny decline/cancel/unsupported/timeout, and never expose confirmation as model-supplied tool input. CI test L2 uses its existing automatic policy; no static approved environment switch. Cost if wrong: replace the trusted confirmation adapter, retaining fail-closed policy and backend approved header.",
+    "decision_zh": "生产 L2 采用官方 elicitation/Resolve 可信确认，只有显式 accept 且 confirmed=true 可写；拒绝、取消、不支持、超时均拒写；测试 CI 自动策略独立。",
+    "reversal_cost_zh": "替换确认适配器，保留后端批准头和默认拒绝。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M47",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 47,
+    "kind": "实施裁决",
+    "text": "- Ruling: CapabilityHttpClient.call may accept a keyword-only trusted approved flag, default false, to forward the internal X-Agent-Approved header after policy/confirmation — the three original positional parameters cannot carry that trusted decision. Cost if wrong: revise the private client forwarding signature and its tests; wire tool arguments unchanged.",
+    "decision_zh": "内部 HTTP 客户端增加可信、仅限关键字的 approved 参数，默认 false。",
+    "reversal_cost_zh": "调整私有转发方法和测试，不改模型工具参数。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M48",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 48,
+    "kind": "实施裁决",
+    "text": "- Ruling: Deny every production ci_agent request, including reads — the approved isolation rule and existing capability reject production CI, so MCP must reject before contacting the backend as well. Cost if wrong: adjust only the pure policy/auth boundary if the human later authorizes production CI reads.",
+    "decision_zh": "production 环境拒绝全部 ci_agent 请求，包括读取，且在接触后端前拒绝。",
+    "reversal_cost_zh": "仅在人明确授权生产 CI 读取后调整纯策略/认证边界。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M52",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 52,
+    "kind": "实施裁决",
+    "text": "- Ruling: Treat 5xx retryability as opt-in from the internal service rather than inferred from status — Task3 test wording conflicts with its explicit Step3 restriction, and unknown write outcome must not prompt an automatic resend. Cost if wrong: revise error metadata only, retaining observation-before-retry behavior.",
+    "decision_zh": "5xx 是否可重试由内部服务显式给出，不根据 HTTP 状态推断；结果未知先观察。",
+    "reversal_cost_zh": "只调整错误元数据，保留观察后再决定重试。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M53",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 53,
+    "kind": "实施裁决",
+    "text": "- Ruling: Enable the Compose MCP service through an explicit agent profile with selective environment variables — otherwise adding mandatory new token interpolation/full env_file would break existing deployments or expose unrelated DB/Feishu credentials. Cost if wrong: change only the sidecar activation command and network/env wiring; existing app startup remains compatible.",
+    "decision_zh": "Compose MCP 由显式 agent profile 启用，选择性传递环境变量，避免破坏原部署或传入数据库/飞书秘密。",
+    "reversal_cost_zh": "修改 sidecar 启动命令、网络和变量接线。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M54",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 54,
+    "kind": "程序性引用",
+    "text": "Shared final-gate decision (source is capability ledger): Treat the three approved dependent plans as one branch delivery: keep every per-task spec/quality gate and run one most-capable whole-branch review after capability, MCP and Evaluation tasks are all complete, rather than re-reviewing the same cumulative branch three times — the broad review is meant to assess final cross-layer behavior, which is unavailable after the first subsystem alone. Retain each plan's separate workspace/ledger until that unified final gate, then collect all rulings before cleanup. Cost if wrong: add a subsystem-wide review before release; no task gate, implementation scope or final branch review is removed.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M59",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 59,
+    "kind": "实施裁决",
+    "text": "Ruling: Constrain backend requires-python to >=3.11,<3.14 for this locked runtime, retaining existing FastAPI0.116.1/Starlette0.47.3 — SDK2.2.0 conditionally requires Starlette>=0.48 on Python3.14+, which conflicts with the approved existing stack; current deployed/tested Python3.13.14 is compatible. Document actual tested3.13 separately from metadata-compatible3.11–3.13. Cost if wrong: revise the Python upper bound or perform a separately reviewed framework/SDK upgrade; no unverified3.14 support is advertised.",
+    "decision_zh": "锁定运行时 Python >=3.11,<3.14，保留现有 FastAPI/Starlette；实际验证 Python 3.13。",
+    "reversal_cost_zh": "调整版本上限或另行评审框架/SDK 升级，不宣称未验证的 3.14。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M62",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 62,
+    "kind": "程序性引用",
+    "text": "Task 1: complete (commits230774f..f187be7, spec PASS and quality PASS, C/I/M0); SDK7passed, nonDB309passed2historicalwarnings, actual HTTP legacy/default discovery; task-1-review.md. Live tools/identity entry binding remains Task4 by preflight ruling.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "M77",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 77,
+    "kind": "实施裁决",
+    "text": "Ruling: Extend Task3 minimally to backend/app/dependencies.py, focused internal-router tests and docs/backend-api.md to add optional X-Agent-Identity-Encoding: base64url-utf8 for actor_id/run_id/case_id — the reviewed Principal supports Chinese IDs but httpx ASCII and ASGI Latin-1 header handling otherwise corrupt valid trusted identity. With the marker present, encode every present identity ID as canonical unpadded base64url of UTF-8, decode strictly after service authentication, reject unknown/duplicate marker or malformed/noncanonical encoding, and retain existing unmarked ASCII clients. Actor-type/environment/approved remain literal trusted fields. Cost if wrong: revise this private optional identity transport encoding and paired tests before rollout; public APIs, stored identity and DB schema remain unchanged.",
+    "decision_zh": "可信内部身份头可标记 base64url-utf8 编码，以严格规范编码承载中文 actor/run/case ID；原 ASCII 调用兼容。",
+    "reversal_cost_zh": "上线前调整私有身份传输及成对测试，不改存储身份或数据库。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M87",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 87,
+    "kind": "实施裁决",
+    "text": "Ruling: Bring the already-planned exactly pinned safe YAML parser forward from Evaluation Task1 into MCP Task5 when adding Compose YAML tests, with minimal pyproject/requirements.lock changes — deployment contract tests must parse real YAML without depending on a running Docker daemon or a machine-specific Docker CLI, and the same parser is required immediately afterward by versioned evaluation cases. Verify official package metadata/version before pinning; Evaluation Task1 consumes the shared dependency instead of duplicating it. Cost if wrong: remove this test/parser dependency and replace Compose validation with an equivalent reviewed native CLI path; no business or protocol semantics change.",
+    "decision_zh": "安全 YAML 解析器的精确依赖从 Evaluation 提前到 Compose 解析测试，后续复用同一版本。",
+    "reversal_cost_zh": "改用等效原生 CLI 校验并移除解析依赖，不改协议语义。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M89",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 89,
+    "kind": "实施裁决",
+    "text": "Ruling: Permit a minimal backend/app/mcp/health.py (and focused runtime glue only if needed) in Task5 to run bounded authenticated official-MCP initialize/list_tools against the actual /mcp path and exit nonzero on failure — Task4 intentionally exposes no synthetic health route, while Task5 mandates a real readiness probe; a reusable module avoids shell-embedded code and exercises the true protocol without DB access. Cost if wrong: replace this probe command/module with a later native readiness route; tool contracts and deployment credentials remain unchanged.",
+    "decision_zh": "增加 health.py，限时使用带认证的官方 MCP initialize/list_tools 验证真实 /mcp 就绪。",
+    "reversal_cost_zh": "替换为后续原生就绪接口，不改工具或部署凭据。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M91",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 91,
+    "kind": "实施裁决",
+    "text": "Ruling: Use the implemented sidecar-specific ORG_MCP_CAPABILITY_BASE_URL, ORG_MCP_ACTOR_TYPE/ACTOR_ID/RUN_ID/CASE_ID as canonical deployment names in Task5, alongside planned ORG_MCP_HOST/PORT and shared ORG_AGENT_ENVIRONMENT/backend token; update the illustrative Task5 ORG_CAPABILITY_BASE_URL/ORG_AGENT_ID/ACTOR_TYPE/RUN_ID/CASE_ID names accordingly rather than adding unused aliases — this adapter has no released clients yet, and a separate namespace prevents app/sidecar identity configuration ambiguity. Cost if wrong: rename these new environment settings and paired deployment/docs tests before rollout; protocol and stored actor identity remain unchanged.",
+    "decision_zh": "部署统一采用 ORG_MCP_CAPABILITY_BASE_URL 与 ORG_MCP_ACTOR_*/RUN_ID/CASE_ID 命名，避免与应用身份混淆。",
+    "reversal_cost_zh": "上线前重命名新增变量并更新部署/文档测试。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M92",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 92,
+    "kind": "实施裁决",
+    "text": "Ruling: Include .dockerignore in Task5 minimal changes to exclude .superpowers from Docker build context — the actual existing ignore file omits this directory, which now contains disposable MySQL credentials/runtime and local SDD artifacts; keeping secrets out of image layers alone does not keep them out of the builder context. Cost if wrong: revise this single context-exclusion pattern and deployment test; source/runtime protocol behavior is unaffected.",
+    "decision_zh": "Docker 构建上下文排除 .superpowers，防止临时凭据及运行记录进入构建器。",
+    "reversal_cost_zh": "调整一条排除规则及部署测试，不改运行协议。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "M96",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 96,
+    "kind": "程序性引用",
+    "text": "Task5: implementation dispatch base4384e570c10daecabbbf8fe318be266b49ffe82b; task-5-brief.md contains exact-runtime handoff and all dependency/config/health/dockerignore rulings.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "M97",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 97,
+    "kind": "程序性引用",
+    "text": "Task5 implementer /root/mcp_compose_runtime active (standard integration model); only implementer. Task4 formal report plus prepared full brief/rulings handed over.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "M98",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 98,
+    "kind": "程序性引用",
+    "text": "Task5 progress: officialPyPI PyYAML6.0.3 metadata Python>=3.8 verified, worktreevenvonly install; planned parser moved early per ruling. SDK0.0.0.0 defaultDNS protection off discovered; implementation will explicitly limit loopback+Compose mcp/actualport via TransportSecuritySettings. Optional empty run/case env ignored as absent. RED tests underway.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "M100",
+    "source": ".superpowers/sdd/2026-10-13-mcp-adapter-policy/progress.md",
+    "line": 100,
+    "kind": "实施裁决",
+    "text": "Ruling: Keep Dockerfile unchanged in Task5 after verifying its existing backend COPY and locked-dependency install already build the shared Python runtime, with sidecar command and readiness supplied by Compose — the illustrative Files row alone does not justify an inert image edit, and the approved brief explicitly requires only necessary Dockerfile changes. Cost if wrong: add the minimal image instruction later and rerun deployment checks; no current runtime feature depends on an unmade Dockerfile change.",
+    "decision_zh": "既有 Dockerfile 已复制后端并安装锁定依赖；sidecar 命令/探针由 Compose 提供，本任务无需无效镜像修改。",
+    "reversal_cost_zh": "后续若需要则补最小镜像指令并重验。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E45",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 45,
+    "kind": "程序性引用",
+    "text": "## Rulings",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "E46",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 46,
+    "kind": "实施裁决",
+    "text": "- Ruling: Task1 may add evaluation/__init__.py, implement every fixed model including AgentRunContext/AgentRun, and add an exactly pinned safe YAML parser in pyproject/lock — the file map omits dependencies required by its own versioned YAML loading and later fixed protocols. Cost if wrong: revise package exports/model placement or parser pin; case and runner semantics unchanged.",
+    "decision_zh": "补齐 evaluation 包与五个固定模型，使用已审查的精确 YAML 依赖。",
+    "reversal_cost_zh": "调整包导出、模型位置或解析器 pin，不改用例与 Runner 语义。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E47",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 47,
+    "kind": "实施裁决",
+    "text": "- Ruling: Define suite loading as duplicate detection within one explicit load operation, not a global seen-ID registry — repeatable runs must be able to load the same case again. Cost if wrong: revise loader bookkeeping only.",
+    "decision_zh": "用例 ID 仅在一次 suite 加载中判重，同一文件可反复加载。",
+    "reversal_cost_zh": "只调整加载器记账方式。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E48",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 48,
+    "kind": "实施裁决",
+    "text": "- Ruling: Add a minimal evaluation/harness.py for real runtime orchestration inTask4 if needed, separate from pure Worker and runner reporting — official async MCP, protected HTTP app and background production sync Worker need lifecycle ownership; direct calls cannot stand in for MCP. Cost if wrong: consolidate that orchestration without changing Worker protocol or deterministic gate.",
+    "decision_zh": "Harness 独立拥有官方异步 MCP、真实受保护 HTTP 与生产同步 Worker 的生命周期。",
+    "reversal_cost_zh": "合并编排模块，不改 Worker 协议或硬门槛。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E49",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 49,
+    "kind": "实施裁决",
+    "text": "- Ruling: CLI without a valid actual MySQL _test target exits2; pure unit tests use explicit injected doubles while documented smoke uses real MySQL/MCP/FakeFeishu — a scripted worker does not authorize a SQLite or mock-database success fallback. Cost if wrong: revise only test injection/CLI setup; real smoke remains required before acceptance.",
+    "decision_zh": "真实 CLI 没有合法实际 MySQL _test 目标退出 2；单测只能显式注入 double，不能降级伪成功。",
+    "reversal_cost_zh": "调整测试注入/CLI 配置，仍需真实 smoke。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E50",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 50,
+    "kind": "实施裁决",
+    "text": "- Ruling: Correct migration instructions to pass only the already-validated test URL as ORG_DATABASE_URL in the migration subprocess, then clear it for tests — Alembic does not read ORG_TEST_DATABASE_URL, so the plan's sample alone could use the wrong environment. Cost if wrong: adjust the test-only migration wrapper/instructions; production config untouched.",
+    "decision_zh": "Alembic 仅接收已验证测试连接的短生命周期 ORG_DATABASE_URL 映射，不能仅设置 ORG_TEST_DATABASE_URL 后直接迁移。",
+    "reversal_cost_zh": "修改测试迁移包装器或说明，不改生产配置。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E51",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 51,
+    "kind": "实施裁决",
+    "text": "- Ruling: Optional judge returns empty numeric scores when disabled and records disabled/failure diagnostics outside soft_scores — the fixed dict[str,float] and diagnostic requirement must both hold; no soft output can replace hard_passed. Cost if wrong: revise diagnostic metadata presentation without changing CI gate.",
+    "decision_zh": "禁用模型 Judge 时返回空数值分数，状态另存 metadata；软分不得覆盖硬门槛。",
+    "reversal_cost_zh": "调整诊断元数据展示，不改 CI 硬门禁。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E56",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 56,
+    "kind": "程序性引用",
+    "text": "Dependency scheduling update: MCP Task5 will add the already-planned exact safe YAML parser for Compose tests; Evaluation Task1 must consume its reviewed pin, not reinstall/upgrade it. Decision source is MCP ledger Ruling.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "E60",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 60,
+    "kind": "实施裁决",
+    "text": "Ruling: Include docs/adr/0002-agent-native-capability-evaluation.md in Task6 documentation, using a controller-provided inventory of every ledger Ruling plus the approved architecture boundaries — the requirements archive section16 explicitly calls for a separate lasting ADR once receipts/Agent permissions become architecture, and ignored SDD scratch will be removed after final review. Distinguish human-confirmed business decisions from implementation rulings; do not claim each ruling was separately human approved. Cost if wrong: revise or remove one documentation record; runtime, schema and release state stay unchanged.",
+    "decision_zh": "增加 ADR 0002 长期保存架构边界与全部台账裁决，区分人确认与实施判断。",
+    "reversal_cost_zh": "修改或移除该记录，不影响运行、结构或发布状态。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E67",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 67,
+    "kind": "程序性引用",
+    "text": "Controller reminder beforeTask6dispatch: collect EVERY line containingRuling: from all3ownedledgers (including preflighttables/crossplan decisions) with source+line into own-plan inventory for ADR0002 author; finaluser report must exhaustively deliver rulings/costs before scratchcleanup. Unifiedfinalreview/finalfixwave still pending after all6tasks.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "E76",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 76,
+    "kind": "实施裁决",
+    "text": "Ruling: Add backend/app/evaluation/evidence.py in Task3 for independent MySQL read-only RR snapshots, private full-row comparison, public summaries and pre-redaction leak scanning, keeping assertions.py pure — the task mandates both a DB evidence boundary and deterministic predicates, which are separate responsibilities despite the illustrative two-file list. Tests remain test_assertions.py including explicitly guarded actualMySQL checks. Cost if wrong: consolidate the small reader module without changing fixed assertion functions or hard-gate semantics.",
+    "decision_zh": "独立只读 RR 快照、私有行比较、出站扫描放入 evidence.py；assertions 保持纯确定性。",
+    "reversal_cost_zh": "合并证据读取模块，不改固定断言签名或硬语义。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E77",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 77,
+    "kind": "实施裁决",
+    "text": "Ruling: Define pending_protected as preservation of previously committed source facts and employee membership relations, permitting sync_quality/last_seen_at and derived primary_store_status/projections to change; verify derived rows separately against fixed expected rows/attribution — real Publisher recomputes projections after quality degradation, so requiring old confirmed store projections would contradict honest unknown/pending semantics and the approved source-authority boundary. Cost if wrong: tighten the predicate field classification and fixture expectations; no source-fact deletion or production behavior is authorized by this evaluator rule.",
+    "decision_zh": "pending_protected 保留旧来源事实及成员关系，允许质量/时间与派生投影变化；派生结果另行字面断言。",
+    "reversal_cost_zh": "收紧评测字段分类与预期，不授权删除来源事实。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E80",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 80,
+    "kind": "程序性引用",
+    "text": "Task3 reviewpreliminaryImportant: actualminimaloffline repro6/6 (twoofficialreadcases × emptytrace/unrelatedsuccess/targetNOT_FOUND) return no failures andhardpass whenDB already seededcorrect andterminal{}. Need trusted successfultarget read evidence, notmerelylen(trace)>0; awaitformalreport andcontrollerminimalcontractruling beforefix1. No downstreamRunner dispatched.",
+    "decision_zh": "既有裁决的程序性索引或引用；不新增独立决策。",
+    "reversal_cost_zh": "无新增撤回成本；成本随被引用的实际裁决。",
+    "cost_basis": "沿用来源裁决"
+  },
+  {
+    "id": "E83",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 83,
+    "kind": "实施裁决",
+    "text": "Ruling: Require trusted successful target MCP response evidence for the two read cases, comparing returned target fields to fixed expected values and independent DB, through the smallest private EvaluationEvidence/CapturedOutput extension and YAML completion predicate while preserving all five fixed dataclasses and three assertion signatures — seeded DB postconditions alone cannot establish an Agent completed a read, and trace metadata lacks result bodies. Runner must capture this at the trusted MCP boundary, never from Worker self-report; accept legitimate read paths rather than a rigid sequence. Cost if wrong: revise the private result adapter and case completion predicates plus their Runner integration, without changing production data or fixed public models.",
+    "decision_zh": "读取用例必须有可信目标 MCP 成功响应，返回字段同时与固定预期和独立数据库比对，Worker 自报不能代替。",
+    "reversal_cost_zh": "修改私有响应适配器、完成谓词与 Runner 集成，不改固定模型。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E84",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 84,
+    "kind": "实施裁决",
+    "text": "Ruling: Always bind every audit row for a real store_profile mutation to its owning apply receipt and that receipt's trusted request target, regardless of audit_required — the false flag exempts only unchanged operations from audit existence, not actual changes from request attribution. Cost if wrong: revise evaluation-only attribution logic and tests; legitimate nochange remains allowed and production operation behavior remains unchanged.",
+    "decision_zh": "每次真实门店变化的审计都必须绑定 owning apply 回执及可信请求目标，即使 audit_required=false。",
+    "reversal_cost_zh": "调整评测归因与测试，合法无变化仍允许。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E91",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 91,
+    "kind": "实施裁决",
+    "text": "Ruling: In Task4 minimally correct read_completion to evaluate the last relevant target read response as completion evidence against fixed expectations and the final independent snapshot, instead of requiring every historical successful read to equal the final state; retain binding/uniqueness and pre-redaction leak checks across all responses — a legitimate read(v1) -> controlled write(v2) -> final read(v2) must not fail solely because its truthful earlier observation used v1, and hardcoding the smoke to avoid that read would conceal a real integration defect. A later target failure must not be hidden by choosing an earlier successful response. Earlier observations remain historical evidence rather than final postconditions. Include assertions.py and focused test_assertions.py in Task4 allowed changes and task-scoped review. Cost if wrong: revise evaluation-only completion selection and regression cases; production APIs, fixed models and database structure remain unchanged.",
+    "decision_zh": "以最终相关目标读取核验完成，保留历史响应真实性及泄露检查；晚失败不能被旧成功掩盖，正常分页同版本允许。",
+    "reversal_cost_zh": "调整评测完成证据选择和回归，不改生产 API、固定模型或数据库。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E94",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 94,
+    "kind": "实施裁决",
+    "text": "Ruling: Task 5 补充封闭的 rows_unchanged 与 conflict_recovery 谓词、最小私有门店响应证明，以及目标事实质量与全局质量的独立核验；由可信 after_tool hook 通过独立 MySQL 连接调用正常 StoreAdminService.apply 制造一次并发门店变更。理由：范围外事实不可被漏验，最终数据库正确不能代替真实冲突及冲突后读取证明，pending 目标也不能因全局 partial 被假报 resolved。撤回成本：调整评测私有证据、断言和合成用例，不改生产接口、归属算法或数据库结构。",
+    "decision_zh": "Task 5 补充封闭的 rows_unchanged 与 conflict_recovery 谓词、最小私有门店响应证明，以及目标事实质量与全局质量的独立核验；由可信 after_tool hook 通过独立 MySQL 连接调用正常 StoreAdminService.apply 制造一次并发门店变更。理由：范围外事实不可被漏验，最终数据库正确不能代替真实冲突及冲突后读取证明，pending 目标也不能因全局 partial 被假报 resolved。",
+    "reversal_cost_zh": "调整评测私有证据、断言和合成用例，不改生产接口、归属算法或数据库结构。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E96",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 96,
+    "kind": "实施裁决",
+    "text": "Ruling: Task 6 可选模型诊断在 redacted_test_only 策略下只外发允许的工具名、布尔值和行数，goal 与 final_text 自由文本整体遮盖；默认不创建 provider、不联网。理由：现阶段没有已批准的员工原文外发规则，完整遮盖可避免仅靠模式匹配遗漏姓名或任意敏感原文。撤回成本：未来在单独批准的数据策略下增加字段级脱敏及相关验证；当前诊断的语义信息量较少，不可宣称真实模型理解能力验收。",
+    "decision_zh": "Task 6 可选模型诊断在 redacted_test_only 策略下只外发允许的工具名、布尔值和行数，goal 与 final_text 自由文本整体遮盖；默认不创建 provider、不联网。理由：现阶段没有已批准的员工原文外发规则，完整遮盖可避免仅靠模式匹配遗漏姓名或任意敏感原文。",
+    "reversal_cost_zh": "未来在单独批准的数据策略下增加字段级脱敏及相关验证；当前诊断的语义信息量较少，不可宣称真实模型理解能力验收。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E97",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 97,
+    "kind": "实施裁决",
+    "text": "Ruling: Task 5 审查补充 preview_apply 硬谓词，必须以可信成功预览证明相同变更、世代及版本先于应用；子树夹具的部门和员工后页均加入独有事实及字面预期，并用丢页和跳过预览的真实 MySQL mutation 验证不会误过。理由：脚本执行了正确步骤不能代替 Evaluator 证明这些要求，重复数据页也不能证明范围完整。撤回成本：调整评测封闭谓词、合成 YAML 与回归，不修改生产服务或数据库结构。",
+    "decision_zh": "Task 5 审查补充 preview_apply 硬谓词，必须以可信成功预览证明相同变更、世代及版本先于应用；子树夹具的部门和员工后页均加入独有事实及字面预期，并用丢页和跳过预览的真实 MySQL mutation 验证不会误过。理由：脚本执行了正确步骤不能代替 Evaluator 证明这些要求，重复数据页也不能证明范围完整。",
+    "reversal_cost_zh": "调整评测封闭谓词、合成 YAML 与回归，不修改生产服务或数据库结构。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E105",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 105,
+    "kind": "实施裁决",
+    "text": "Ruling: 终态同步回执在原 finalize 事务中以当前锁读冻结 failed_detail_count 至已有 result_summary JSON，终态 get_operation 仅使用冻结任务证据；accepted 回执和 get_sync_job 继续返回当前任务，旧终态缺失的计数不从后续重试猜补。理由：原失败摘要与审计已冻结，混入后来成功的明细会使同一持久操作的证据串轮；独立 MySQL 双事务回归同时核验旧 RR 快照和重试后的稳定性。撤回成本：调整回执 JSON 摘要、终态观察构造和相关回归，无 DDL 或生产数据回填，旧回执继续兼容。",
+    "decision_zh": "终态同步回执在原 finalize 事务中以当前锁读冻结 failed_detail_count 至已有 result_summary JSON，终态 get_operation 仅使用冻结任务证据；accepted 回执和 get_sync_job 继续返回当前任务，旧终态缺失的计数不从后续重试猜补。理由：原失败摘要与审计已冻结，混入后来成功的明细会使同一持久操作的证据串轮；独立 MySQL 双事务回归同时核验旧 RR 快照和重试后的稳定性。",
+    "reversal_cost_zh": "调整回执 JSON 摘要、终态观察构造和相关回归，无 DDL 或生产数据回填，旧回执继续兼容。",
+    "cost_basis": "原始裁决明列"
+  },
+  {
+    "id": "E106",
+    "source": ".superpowers/sdd/2026-10-13-agent-evaluation-ci/progress.md",
+    "line": 106,
+    "kind": "实施裁决",
+    "text": "Ruling: 将固定官方 SDK 对默认 loopback host 的有效 TransportSecuritySettings 在本地显式化，同一配置同时供 SafeTransportBoundary 与 SDK 使用，保持认证优先、421/403 和原防护。理由：仅识别显式参数会漏掉 SDK 隐式默认拒绝日志，原始恶意头可能含秘密。撤回成本：调整默认配置适配及真实 ASGI 回归；将来升级 SDK 时核对默认值，无全局日志屏蔽或第三方包修改。",
+    "decision_zh": "将固定官方 SDK 对默认 loopback host 的有效 TransportSecuritySettings 在本地显式化，同一配置同时供 SafeTransportBoundary 与 SDK 使用，保持认证优先、421/403 和原防护。理由：仅识别显式参数会漏掉 SDK 隐式默认拒绝日志，原始恶意头可能含秘密。",
+    "reversal_cost_zh": "调整默认配置适配及真实 ASGI 回归；将来升级 SDK 时核对默认值，无全局日志屏蔽或第三方包修改。",
+    "cost_basis": "原始裁决明列"
+  }
+]

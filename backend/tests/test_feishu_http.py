@@ -7,16 +7,17 @@ from app.config import get_settings, Settings
 from app.dependencies import get_admin_identity, get_runtime
 
 
-def test_session_bootstrap_requires_matching_cookie_and_does_not_put_csrf_in_url():
+def test_session_bootstrap_requires_matching_cookie_and_does_not_put_csrf_in_url(sqlite_sessions):
     secret='s'*32
     app.dependency_overrides[get_settings]=lambda: Settings(session_secret=secret)
     app.dependency_overrides[get_admin_identity]=lambda: SimpleNamespace(open_id='ou',csrf_hash=hmac.new(secret.encode(),b'csrf',hashlib.sha256).hexdigest())
+    app.dependency_overrides[get_runtime]=lambda: SimpleNamespace(sessions=sqlite_sessions)
     try:
         client=TestClient(app)
         assert client.get('/admin/auth/session').status_code == 403
         client.cookies.set('org_csrf','csrf')
         response=client.get('/admin/auth/session')
-        assert response.json() == {'data':{'open_id':'ou','csrf_token':'csrf'},'meta':{}}
+        assert response.json() == {'data':{'open_id':'ou','csrf_token':'csrf','initialization_complete':True},'meta':{}}
         assert response.headers['cache-control'] == 'no-store'
     finally: app.dependency_overrides.clear()
 

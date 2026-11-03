@@ -1,32 +1,13 @@
 """SQLite 仅验证事务业务；不替代 MySQL 行锁并发验收。"""
 from datetime import datetime, timedelta
 import pytest
-from sqlalchemy import create_engine, event, select
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy import BigInteger
-from sqlalchemy.orm import sessionmaker
-from app.persistence.models import Base, DatasetState, SystemSetting, Department, Employee, EmployeeDepartment, StoreProfile, EmployeeStore, SyncJob
-
-
-@compiles(BigInteger, 'sqlite')
-def sqlite_integer(element, compiler, **kwargs):
-    return 'INTEGER'
+from sqlalchemy import select
+from app.persistence.models import DatasetState, Department, Employee, EmployeeDepartment, StoreProfile, EmployeeStore, SyncJob
 
 
 @pytest.fixture
-def sessions():
-    engine = create_engine('sqlite://')
-    @event.listens_for(engine, 'connect')
-    def configure(connection, _):
-        connection.create_collation('utf8mb4_bin', lambda a, b: (a > b) - (a < b))
-        connection.execute('PRAGMA foreign_keys=ON')
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(engine, expire_on_commit=False)
-    with factory.begin() as db:
-        db.add(DatasetState(id=1, dataset_epoch='e', data_version=1, initialization_status='complete'))
-        db.add(SystemSetting(key='task_queue_lock', value='1'))
-    yield factory
-    engine.dispose()
+def sessions(sqlite_sessions):
+    return sqlite_sessions
 
 
 def test_preview_counts_descendant_changes_but_excludes_nested_store(sessions):
@@ -88,8 +69,9 @@ def test_oauth_state_single_use_bound_to_browser_and_identity(sessions):
     service=OAuthService(sessions, settings, API())
     state=service.begin()
     with pytest.raises(ValueError): service.complete(state, 'wrong', 'code')
-    session, csrf=service.complete(state, state, 'code')
+    session, csrf, token=service.complete(state, state, 'code')
     assert session.open_id == 'ou' and csrf
+    assert token != session.token_digest
     with pytest.raises(ValueError): service.complete(state, state, 'code')
 
 

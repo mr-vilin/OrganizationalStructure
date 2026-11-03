@@ -12,3 +12,9 @@
 **/dist
 backups
 docs/ui
+.superpowers
+build-info.json
+backend/app/_build_info.json
+**/.umi
+**/.umi-production
+**/.cache

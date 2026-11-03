@@ -1,13 +1,22 @@
 import hashlib
 import hmac
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.capabilities.receipts import ReceiptRepository
+
 from .models import AdminAllowlist, AdminSession, ApiClient, ChangeLog, DatasetState, SyncJob, SystemSetting, LoginIdentity, Employee
+
+
+@dataclass(frozen=True)
+class IssuedSession:
+    record: AdminSession
+    token: str
 
 
 class SqlIdentityRepository:
@@ -24,25 +33,32 @@ class SqlIdentityRepository:
                 return None
             return record if hmac.compare_digest(record.secret_hash, self._hash(secret)) else None
 
-    def authenticate_session(self, session_id: str, now: datetime) -> AdminSession | None:
+    def authenticate_session(self, session_token: str, now: datetime) -> AdminSession | None:
         with self._sessions() as db:
-            return db.scalar(self.session_auth_statement(session_id, now))
+            return db.scalar(self.session_auth_statement(self._session_digest(session_token), now))
 
     @staticmethod
-    def session_auth_statement(session_id: str, now: datetime):
+    def session_auth_statement(token_digest: str, now: datetime):
         inactive = select(LoginIdentity.open_id).join(Employee,Employee.feishu_user_id==LoginIdentity.user_id).where(LoginIdentity.open_id==AdminSession.open_id,Employee.status=='inactive').exists()
         return select(AdminSession).join(
             AdminAllowlist, AdminAllowlist.open_id == AdminSession.open_id
-        ).where(AdminSession.id == session_id, AdminSession.revoked_at.is_(None), AdminSession.expires_at > now, ~inactive)
+        ).where(AdminSession.token_digest == token_digest, AdminSession.revoked_at.is_(None), AdminSession.expires_at > now, ~inactive)
 
-    def create_session(self, open_id: str, csrf_token: str, expires_at: datetime, now: datetime) -> AdminSession | None:
+    def create_session(self, open_id: str, csrf_token: str, expires_at: datetime, now: datetime) -> IssuedSession | None:
         """供 OAuth 适配器在换取并核实 open_id 后建立可撤销会话。"""
         with self._sessions.begin() as db:
             if db.get(AdminAllowlist, open_id) is None:
                 return None
-            record = AdminSession(id=secrets.token_urlsafe(32), open_id=open_id, csrf_hash=self._hmac(csrf_token), expires_at=expires_at)
+            token = secrets.token_urlsafe(32)
+            record = AdminSession(
+                id=secrets.token_urlsafe(16),
+                token_digest=self._session_digest(token),
+                open_id=open_id,
+                csrf_hash=self._hmac(csrf_token),
+                expires_at=expires_at,
+            )
             db.add(record)
-            return record
+            return IssuedSession(record=record, token=token)
 
     def revoke_session(self, session_id: str, now: datetime) -> bool:
         with self._sessions.begin() as db:
@@ -59,7 +75,9 @@ class SqlIdentityRepository:
             if marker is not None:
                 return False
             for open_id in open_ids:
-                db.add(AdminAllowlist(open_id=open_id, created_at=now))
+                # 恢复/人工清理后标记可能丢失，但白名单记录仍在；避免重复主键导致登录失败。
+                if db.get(AdminAllowlist, open_id) is None:
+                    db.add(AdminAllowlist(open_id=open_id, created_at=now))
             db.add(SystemSetting(key="admin_allowlist_initialized", value="true"))
             return True
 
@@ -132,6 +150,10 @@ class SqlIdentityRepository:
     def _hmac(self, value: str) -> str:
         return hmac.new(self._pepper, value.encode(), hashlib.sha256).hexdigest()
 
+    @staticmethod
+    def _session_digest(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
+
 
 class SqlSyncJobRepository:
     """使用 MySQL 行锁实现任务复用、认领和重试。"""
@@ -141,36 +163,71 @@ class SqlSyncJobRepository:
     def __init__(self, sessions: sessionmaker[Session]):
         self._sessions = sessions
 
-    def submit(self, job_type: str, root_department_id: str | None, requested_by: str, now: datetime) -> tuple[SyncJob, bool]:
+    def submit(self, job_type: str, root_department_id: str | None, requested_by: str, now: datetime, description: str | None = None) -> tuple[SyncJob, bool]:
         with self._sessions.begin() as db:
-            lock_row = db.scalar(select(SystemSetting).where(SystemSetting.key == "task_queue_lock").with_for_update())
-            if lock_row is None:
-                raise RuntimeError("DATABASE_SCHEMA_INCOMPLETE")
-            existing = db.scalar(
-                select(SyncJob).where(
-                    SyncJob.type == job_type,
-                    SyncJob.root_department_id.is_(None) if root_department_id is None else SyncJob.root_department_id == root_department_id,
-                    SyncJob.status.in_(self.ACTIVE),
-                ).with_for_update()
-            )
-            if existing is not None:
-                return existing, True
-            job = SyncJob(
-                id=secrets.token_urlsafe(12), type=job_type, root_department_id=root_department_id,
-                requested_by=requested_by, status="queued", attempt=1, lease_generation=0,
-                created_at=now, updated_at=now,
-            )
-            db.add(job)
-            return job, False
+            return self.submit_in_session(db, job_type, root_department_id, requested_by, now, description)
+
+    @staticmethod
+    def _lock_dataset(db: Session) -> DatasetState:
+        # 与回执和 Publisher 共用 DatasetState → 队列锁（如需）→ 任务 → 回执顺序。
+        state = db.scalar(select(DatasetState).where(DatasetState.id == 1)
+                          .with_for_update().execution_options(populate_existing=True))
+        if state is None:
+            raise RuntimeError("DATABASE_SCHEMA_INCOMPLETE")
+        return state
+
+    def submit_in_session(self, db: Session, job_type: str, root_department_id: str | None, requested_by: str, now: datetime, description: str | None = None, *, trigger_source: str | None = None, initialization_flow: str | None = None) -> tuple[SyncJob, bool]:
+        state = self._lock_dataset(db)
+        if job_type == 'initialize':
+            import json
+            record = db.get(SystemSetting, 'initialization_flow')
+            flow = json.loads(record.value) if record else {}
+            if (state.initialization_status == 'complete' or not initialization_flow or flow.get('flow_id') != initialization_flow
+                    or flow.get('phase') != 'ready' or len(flow.get('checks', [])) != 4
+                    or any(c.get('status') != 'passed' for c in flow.get('checks', []))):
+                raise RuntimeError('INITIALIZATION_WIZARD_REQUIRED')
+        elif state.initialization_status != 'complete':
+            raise RuntimeError('INITIALIZATION_INCOMPLETE')
+        lock_row = db.scalar(select(SystemSetting).where(SystemSetting.key == "task_queue_lock").with_for_update().execution_options(populate_existing=True))
+        if lock_row is None:
+            raise RuntimeError("DATABASE_SCHEMA_INCOMPLETE")
+        existing = db.scalar(
+            select(SyncJob).where(
+                SyncJob.type == job_type,
+                SyncJob.root_department_id.is_(None) if root_department_id is None else SyncJob.root_department_id == root_department_id,
+                SyncJob.status.in_(self.ACTIVE),
+            ).with_for_update().execution_options(populate_existing=True)
+        )
+        if existing is not None:
+            return existing, True
+        job = SyncJob(
+            id=secrets.token_urlsafe(12), type=job_type, root_department_id=root_department_id,
+            name=f"{job_type}同步", trigger_source=trigger_source if trigger_source is not None else ('manual' if requested_by.startswith('admin:') else requested_by),
+            description=description or ('指定部门子树同步' if root_department_id else '全量组织同步'), requested_by=requested_by,
+            status="queued", attempt=1, lease_generation=0, execution_count=0, retry_count=0,
+            created_at=now, updated_at=now,
+        )
+        db.add(job)
+        return job, False
 
     def claim_next(self, now: datetime, lease_expires_at: datetime) -> SyncJob | None:
         with self._sessions.begin() as db:
+            initialized = select(DatasetState.id).where(
+                DatasetState.id == 1, DatasetState.initialization_status == "complete",
+            ).exists()
             job = db.scalar(
-                select(SyncJob).where(SyncJob.status == "queued", or_(SyncJob.lease_expires_at.is_(None), SyncJob.lease_expires_at <= now)).order_by(SyncJob.created_at, SyncJob.id).limit(1).with_for_update(skip_locked=True)
+                select(SyncJob).where(
+                    SyncJob.status == "queued",
+                    or_(SyncJob.lease_expires_at.is_(None), SyncJob.lease_expires_at <= now),
+                    # 初始化前不能认领核对任务，否则旧队首会反复抢占初始化。
+                    or_(SyncJob.type == "initialize", initialized),
+                ).order_by(SyncJob.created_at, SyncJob.id).limit(1).with_for_update(skip_locked=True)
             )
             if job is None:
                 return None
             job.status = "running"
+            job.execution_count = (job.execution_count or 0) + 1
+            job.started_at = now
             job.lease_generation += 1
             job.lease_expires_at = lease_expires_at
             job.updated_at = now
@@ -184,19 +241,33 @@ class SqlSyncJobRepository:
 
     def _finish(self, job_id: str, lease_generation: int, status: str, error_code: str | None, error_detail: str | None, now: datetime) -> SyncJob:
         with self._sessions.begin() as db:
-            job = db.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update())
+            self._lock_dataset(db)
+            job = db.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update().execution_options(populate_existing=True))
             if job is None or job.status != "running" or job.lease_generation != lease_generation:
                 raise ValueError("job lease is stale")
             job.status, job.error_code, job.error_detail = status, error_code, error_detail
             job.lease_expires_at, job.updated_at = None, now
+            job.finished_at = now
+            ReceiptRepository().finalize_job_in_session(db, job, now)
             return job
 
     def retry(self, job_id: str, requested_by: str, now: datetime) -> SyncJob:
         with self._sessions.begin() as db:
-            job = db.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update())
-            if job is None or job.status != "failed":
-                raise ValueError("only failed jobs can be retried")
-            job.status, job.requested_by, job.attempt = "queued", requested_by, job.attempt + 1
-            job.error_code = job.error_detail = None
-            job.updated_at = now
-            return job
+            return self.retry_in_session(db, job_id, requested_by, now)
+
+    def retry_in_session(self, db: Session, job_id: str, requested_by: str, now: datetime) -> SyncJob:
+        state = self._lock_dataset(db)
+        job = db.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update().execution_options(populate_existing=True))
+        if state.initialization_status != 'complete' or (job and job.type == 'initialize'):
+            raise ValueError('initialization must restart through the wizard')
+        if job is None or job.status != "failed":
+            raise ValueError("only failed jobs can be retried")
+        job.status, job.requested_by, job.attempt = "queued", requested_by, job.attempt + 1
+        job.retry_count = (job.retry_count or 0) + 1
+        job.finished_at = None
+        job.started_at = None
+        job.phase = 'queued'
+        db.add(ChangeLog(object_type='sync_job', object_id=job.id, source='admin', actor=requested_by, job_id=job.id, before_data={'status': 'failed', 'attempt': job.attempt - 1}, after_data={'status': 'queued', 'attempt': job.attempt, 'retry_count': job.retry_count}, committed_at=now))
+        job.error_code = job.error_detail = None
+        job.updated_at = now
+        return job

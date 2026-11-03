@@ -3,12 +3,14 @@ services:
   mysql:
     image: mysql:8.4
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MYSQL_HOST_PORT:-13307}:3306"
     environment:
       MYSQL_DATABASE: organization
       MYSQL_USER: organization
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请配置 MYSQL_PASSWORD}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请配置 MYSQL_ROOT_PASSWORD}
-    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_as_cs"]
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci"]
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
@@ -17,6 +19,7 @@ services:
       timeout: 5s
       retries: 30
   migrate:
+    image: organization-directory-runtime:${ORG_IMAGE_TAG:-local}
     build: .
     env_file: .env
     command: ["python", "-m", "alembic", "upgrade", "head"]
@@ -24,7 +27,9 @@ services:
       mysql:
         condition: service_healthy
   app:
+    image: organization-directory-runtime:${ORG_IMAGE_TAG:-local}
     build: .
+    networks: [default, capabilities]
     env_file: .env
     restart: unless-stopped
     ports:
@@ -38,5 +43,38 @@ services:
       timeout: 5s
       retries: 3
     stop_grace_period: 20s
+  mcp:
+    profiles: [agent]
+    image: organization-directory-runtime:${ORG_IMAGE_TAG:-local}
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "app.mcp", "--transport", "streamable-http"]
+    networks: [capabilities]
+    environment:
+      ORG_MCP_HOST: ${ORG_MCP_HOST:-0.0.0.0}
+      ORG_MCP_PORT: ${ORG_MCP_PORT:-8001}
+      ORG_MCP_SERVICE_TOKEN: ${ORG_MCP_SERVICE_TOKEN:-}
+      ORG_AGENT_SERVICE_TOKEN: ${ORG_AGENT_SERVICE_TOKEN:-}
+      ORG_AGENT_ENVIRONMENT: ${ORG_AGENT_ENVIRONMENT:-production}
+      ORG_MCP_CAPABILITY_BASE_URL: ${ORG_MCP_CAPABILITY_BASE_URL:-http://app:8000}
+      ORG_MCP_ACTOR_TYPE: ${ORG_MCP_ACTOR_TYPE:-}
+      ORG_MCP_ACTOR_ID: ${ORG_MCP_ACTOR_ID:-}
+      ORG_MCP_RUN_ID: ${ORG_MCP_RUN_ID:-}
+      ORG_MCP_CASE_ID: ${ORG_MCP_CASE_ID:-}
+      ORG_MCP_CONFIRMATION_TIMEOUT: ${ORG_MCP_CONFIRMATION_TIMEOUT:-60}
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.mcp.health"]
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 20s
+networks:
+  default:
+  capabilities:
+    internal: true
 volumes:
   mysql-data:

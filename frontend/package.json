@@ -4,28 +4,47 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview --host 127.0.0.1",
-    "test": "vitest run"
+    "dev": "node scripts/run.mjs dev",
+    "build": "node scripts/run.mjs build",
+    "test": "vitest run",
+    "typecheck": "node scripts/run.mjs typecheck",
+    "postinstall": "node scripts/run.mjs setup"
   },
   "dependencies": {
     "@ant-design/icons": "6.3.4",
     "antd": "6.6.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "react-router-dom": "7.18.3"
+    "@umijs/max": "4.7.23",
+    "@ant-design/pro-components": "3.1.14-2",
+    "dayjs": "1.11.23"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",
+    "@types/node": "^24.19.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "6.1.1",
     "jsdom": "30.0.1",
     "typescript": "5.9.3",
     "vite": "8.3.0",
-    "vitest": "5.0.0"
+    "vitest": "5.0.0",
+    "react-router-dom": "7.18.3"
+  },
+  "overrides": {
+    "@umijs/plugins": {
+      "@ant-design/pro-components": "$@ant-design/pro-components"
+    },
+    "@umijs/renderer-react": {
+      "react-helmet-async": "3.0.0"
+    },
+    "valtio": {
+      "use-sync-external-store": "1.6.0"
+    },
+    "@umijs/bundler-utoopack": {
+      "less-loader": "12.3.3"
+    }
   }
 }
