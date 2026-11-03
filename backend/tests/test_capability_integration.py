@@ -269,7 +269,7 @@ def test_publisher_receipts_capture_real_version_and_all_job_audits(mode):
 @pytest.mark.parametrize('origin,current,initialization,full,expected', [
     ('old', 'epoch', 'complete', False, 'failed'),
     ('pending', 'epoch', 'complete', True, 'failed'),
-    ('pending', 'pending', 'pending', True, 'submitted'),
+    ('pending', 'pending', 'pending', True, 'blocked'),
     ('pending', 'pending', 'complete', True, 'failed'),
 ])
 def test_receipt_generation_guard_allows_only_first_initialization(origin, current, initialization, full, expected):
@@ -281,6 +281,14 @@ def test_receipt_generation_guard_allows_only_first_initialization(origin, curre
         with sessions.begin() as db:
             state = db.get(DatasetState, 1)
             state.dataset_epoch, state.initialization_status = current, initialization
+        if expected == 'blocked':
+            from app.initialization.validation import InitializationFailure
+            with pytest.raises(InitializationFailure, match='INITIALIZATION_WIZARD_REQUIRED'):
+                Publisher(sessions).publish(Candidate(full=full), 'job', 1)
+            with sessions() as db:
+                assert db.get(OperationReceipt, operation_id).status == 'accepted'
+                assert db.get(DatasetState, 1).dataset_epoch == 'pending'
+            return
         Publisher(sessions).publish(Candidate(full=full), 'job', 1)
         with sessions() as db:
             row, state = db.get(OperationReceipt, operation_id), db.get(DatasetState, 1)
@@ -449,7 +457,7 @@ def test_worker_terminal_write_failure_rolls_back_failure_and_audit(failure):
     finally: engine.dispose()
 
 
-def test_first_full_initialization_commits_new_epoch_and_actual_changed_version():
+def test_first_full_without_wizard_cannot_commit_or_finalize_legacy_receipt():
     sessions, engine = make_sessions()
     try:
         with sessions.begin() as db:
@@ -458,14 +466,15 @@ def test_first_full_initialization_commits_new_epoch_and_actual_changed_version(
         operation_id = running_receipt(sessions)
         candidate = changed_candidate()
         candidate.full = True
-        Publisher(sessions).publish(candidate, 'job', 1)
+        from app.initialization.validation import InitializationFailure
+        with pytest.raises(InitializationFailure, match='INITIALIZATION_WIZARD_REQUIRED'):
+            Publisher(sessions).publish(candidate, 'job', 1)
         with sessions() as db:
             row, state = db.get(OperationReceipt, operation_id), db.get(DatasetState, 1)
-            assert row.status == 'submitted' and row.before_epoch == 'pending'
+            assert row.status == 'accepted' and row.before_epoch == 'pending'
             assert row.before_version == 0
-            assert row.committed_epoch == state.dataset_epoch != 'pending'
-            assert row.committed_version == state.data_version == 1
-            assert len(row.result_summary['audit_ids']) == 3
+            assert state.dataset_epoch == 'pending' and state.data_version == 0
+            assert (row.committed_epoch, row.committed_version) == ('pending', 0)
     finally: engine.dispose()
 
 
@@ -762,8 +771,9 @@ def test_facade_read_snapshot_uses_one_session_and_target_quality():
         assert service.get_department(agent(), "a").data["meta"]["data_version"] == 7
         service.observations._base = base
         with sessions.begin() as db: db.get(DatasetState, 1).initialization_status = "pending"
-        unknown = service.status(agent())
-        assert unknown.data["data"] is None and unknown.observation.fact_quality == "unknown"
+        from app.capabilities.errors import InitializationIncomplete
+        with pytest.raises(InitializationIncomplete):
+            service.status(agent())
     finally: engine.dispose()
 
 

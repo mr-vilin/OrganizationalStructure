@@ -45,6 +45,8 @@ def test_restore_requires_new_epoch_initialization_and_new_credentials(mysql_ses
         assert state.data_version == 0
         assert state.coverage_status == 'unknown'
         assert state.last_full_sync_at is None
+        from app.initialization.service import load_flow
+        assert load_flow(db)['phase'] == 'cleanup_required'
         assert db.get(AdminSession, 'internal-restore').revoked_at is not None
         assert db.get(ApiClient, token).revoked_at is not None
         assert db.get(AdminAllowlist, recovery_admin) is not None

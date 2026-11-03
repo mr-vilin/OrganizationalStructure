@@ -26,6 +26,8 @@ def reset_restored_state(sessions, *, actor: str, admin_open_id: str | None = No
         state.initialization_status = 'pending'
         state.coverage_status = 'unknown'
         state.last_full_sync_at = None
+        from app.initialization.service import save_flow
+        save_flow(session, {'flow_id': uuid4().hex, 'phase': 'cleanup_required', 'checks': [], 'evidence': None})
         session.execute(update(AdminSession).where(AdminSession.revoked_at.is_(None)).values(revoked_at=now))
         session.execute(update(ApiClient).where(ApiClient.revoked_at.is_(None)).values(revoked_at=now))
         session.execute(update(SyncJob).where(SyncJob.status.in_(['queued', 'running'])).values(
@@ -63,7 +65,7 @@ def main() -> int:
     engine = create_mysql_engine(settings.database_url)
     try:
         epoch = reset_restored_state(session_factory(engine), actor=args.actor.strip(), admin_open_id=args.admin_open_id)
-        print(f'恢复世代已重置：{epoch}；启动应用后执行全量核对，重新创建只读客户端凭据。')
+        print(f'恢复世代已重置：{epoch}；启动应用后由管理员在向导中重新初始化，再创建只读客户端凭据。')
     finally:
         engine.dispose()
     return 0

@@ -11,6 +11,7 @@ from app.evaluation.cases import load_case
 from app.evaluation.fixtures import evaluation_database, reset_test_database, seed_case, verify_test_database, FAKE_APP_ID, FAKE_TENANT_KEY
 from app.persistence import models as m
 from app.persistence.database import create_mysql_engine
+from app.persistence.database import CURRENT_SCHEMA_HEAD
 
 
 CASES = Path(__file__).parents[1] / 'evaluation' / 'cases'
@@ -30,7 +31,7 @@ def assert_reset_baseline(factory):
         counts = {table.name: db.scalar(select(func.count()).select_from(table)) for table in m.Base.metadata.tables.values()}
         assert {key: value for key, value in counts.items() if value} == {
             'dataset_state': 1, 'system_setting': 2, 'worker_lease': 1, 'feishu_connection': 1}
-        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0009_operation_receipt'
+        assert db.scalar(text('SELECT version_num FROM alembic_version')) == CURRENT_SCHEMA_HEAD
 
 
 @pytest.mark.parametrize('case_id', ['ORG_AGENT_READ_PRIMARY_STORE', 'ORG_AGENT_READ_NOT_IN_STORE'])

@@ -11,9 +11,10 @@ class Candidate:
     coverage_status: str = "unknown"
     full: bool = False
     collection_started_at: str | None = None
+    initialization_proof: dict | None = None
 
 
-def _custom_value(raw, field_id):
+def _custom_value(raw, field_id, allow_text=False):
     """读取飞书 custom_attrs 的单选值，保留未知选项而不静默清空。"""
     if not field_id:
         return None, None, False
@@ -24,9 +25,18 @@ def _custom_value(raw, field_id):
         if not isinstance(item, dict) or str(item.get('id') or item.get('field_id')) != str(field_id):
             continue
         value = item.get('value')
+        if allow_text and item.get('type') == 'TEXT':
+            if not isinstance(value, dict) or 'text' not in value:
+                raise RuntimeError('FEISHU_CUSTOM_TEXT_UNREADABLE')
+            text = value['text']
+            if text is not None and (not isinstance(text, str) or len(text) > 255):
+                raise RuntimeError('FEISHU_CUSTOM_TEXT_VALUE_UNSUPPORTED')
+            return None, text, True
         if isinstance(value, dict):
-            return value.get('id') or value.get('option_id'), value.get('name') or value.get('text'), True
+            return value.get('id') or value.get('option_id'), value.get('option_value') or value.get('name') or value.get('text'), True
         if isinstance(value, list):
+            if len(value) > 1:
+                raise RuntimeError('FEISHU_CUSTOM_ENUM_VALUE_UNSUPPORTED')
             value = value[0] if value else None
         if isinstance(value, dict):
             return value.get('id') or value.get('option_id'), value.get('name') or value.get('text'), True
@@ -57,7 +67,7 @@ def normalize_user(raw, custom_mappings=None, employee_type_options=None):
         type_quality = None
     mappings = custom_mappings or {}
     role_id, role_name, role_present = _custom_value(raw, mappings.get('permission_role'))
-    store_id, store_name, store_present = _custom_value(raw, mappings.get('store_attribute'))
+    store_id, store_name, store_present = _custom_value(raw, mappings.get('store_attribute'), allow_text=True)
     quality = 'pending_verification' if not relations_readable else 'inconsistent' if inconsistent else 'complete'
     if type_quality or (mappings.get('permission_role') and not role_present) or (mappings.get('store_attribute') and not store_present):
         quality = 'pending_verification'

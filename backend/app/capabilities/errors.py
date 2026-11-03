@@ -42,5 +42,8 @@ class AmbiguousTarget(CapabilityError):
 class CapabilityUnavailable(CapabilityError):
     code, status, message = "CAPABILITY_UNAVAILABLE", 503, "Capability is temporarily unavailable"
 
+class InitializationIncomplete(CapabilityError):
+    code, status, message = 'INITIALIZATION_INCOMPLETE', 409, '请由管理员完成初始化向导'
+
 class InvalidCapabilityCursor(CapabilityError):
     code, status, message = "INVALID_CURSOR", 400, "Cursor is invalid or does not match filters"

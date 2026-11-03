@@ -60,6 +60,12 @@ class OrganizationCapabilities:
                 raise CapabilityNotAllowed()
         if write and context.environment == "production" and context.approved is not True:
             raise ConfirmationRequired()
+        from .errors import InitializationIncomplete
+        with self.sessions() as db:
+            self._bind_policy(db, context)
+            state = db.get(DatasetState, 1)
+            if state is None or state.initialization_status != 'complete':
+                raise InitializationIncomplete()
 
     @staticmethod
     def _bind_policy(db, context):

@@ -104,13 +104,13 @@ def test_mcp_upgrade_from_current_main_preserves_existing_schema_and_data(migrat
     before = schema_snapshot(engine)
     with engine.connect() as connection:
         rows = connection.execute(text('SELECT * FROM admin_session')).all()
-    command.upgrade(config, 'head')
+    command.upgrade(config, '0009_operation_receipt')
     after = schema_snapshot(engine)
     assert after['versions'] == ['0009_operation_receipt']
     assert set(after['tables']) == {*before['tables'], 'operation_receipt'}
     assert all(after['tables'][name] == spec for name, spec in before['tables'].items())
     with engine.connect() as connection:
         assert connection.execute(text('SELECT * FROM admin_session')).all() == rows
-    assert check_schema(engine)['errors'] == []
+    assert check_schema(engine)['errors'] == ['schema.version']
     command.downgrade(config, '0008_session_digest')
     assert schema_snapshot(engine) == before

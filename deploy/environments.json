@@ -1,0 +1,35 @@
+{
+  "local": {
+    "configured": true,
+    "transport": "local",
+    "root": ".",
+    "compose": "compose.yaml",
+    "project": "organization-directory",
+    "services": ["app", "mcp"],
+    "base_url": "http://127.0.0.1:8000",
+    "https_entry": null,
+    "notes": "Docker Desktop；沿用仓库 .env。数据库迁移单独授权。"
+  },
+  "test": {
+    "configured": true,
+    "transport": "ssh",
+    "ssh_host": "tencent_test_col",
+    "root": "/srv/organization-directory",
+    "compose": "compose.json",
+    "project": "organization-directory",
+    "services": ["app", "mcp"],
+    "base_url": "https://test-organization.bzg.company",
+    "notes": "腾讯云测试环境；sudo -n docker；配置凭据留在服务器，禁止下载。"
+  },
+  "production": {
+    "configured": false,
+    "transport": "ssh",
+    "ssh_host": null,
+    "root": null,
+    "compose": null,
+    "project": null,
+    "services": ["app", "mcp"],
+    "base_url": null,
+    "notes": "待人工确认主机、目录、HTTPS 域名、独立凭据及备份策略；禁止复制测试环境目标。"
+  }
+}

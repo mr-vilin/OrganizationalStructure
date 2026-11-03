@@ -178,12 +178,13 @@ def test_offline_alignment_changes_database_and_freezes_its_schema():
 
 def test_structure_check_detects_missing_index_and_unknown_revision():
     from app.persistence.schema_check import check_schema
+    from app.persistence.database import CURRENT_SCHEMA_HEAD
 
     engine, _ = _sessions()
     try:
         with engine.begin() as connection:
             connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            connection.execute(text("INSERT INTO alembic_version VALUES ('0009_operation_receipt')"))
+            connection.execute(text("INSERT INTO alembic_version VALUES (:head)"), {'head': CURRENT_SCHEMA_HEAD})
         assert check_schema(engine)['errors'] == []
         with engine.begin() as connection:
             connection.execute(text('DROP INDEX ix_admin_session_open_id'))

@@ -14,3 +14,31 @@ body { margin: 0; color: #263449; background: #f5f7fa; }
   .workspace-header { padding: 0 8px; gap: 0; }
   .workspace-title { gap: 0; font-size: 12px; }
 }
+/* 初始化在工作台布局之外，占据完整页面。 */
+.initialization-page { min-height: 100vh; background: #f5f7fa; padding: 40px 24px; }
+.initialization-shell { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; }
+.initialization-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.initialization-header h1 { margin: 8px 0; font-size: 28px; }
+.initialization-header p, .initialization-muted { color: #667085; }
+.initialization-eyebrow { color: #1677ff; font-weight: 600; }
+.initialization-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.initialization-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
+.initialization-options { margin-bottom: 24px; }
+.initialization-options h3 { margin: 0; font-size: 14px; }
+.initialization-option-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 0 24px; align-items: start; }
+.initialization-option-remove { margin-top: 30px; }
+.check-items { list-style: none; padding: 0; margin: 0 0 12px; }
+.check-items li { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.check-items p { color: #667085; margin: 4px 0 0; overflow-wrap: anywhere; }
+.check-passed { color: #389e0d; }
+.check-failed { color: #cf1322; }
+.check-pending { color: #98a2b3; font-size: 16px; }
+.initialization-ready { border-color: #b7eb8f; }
+.initialization-issues { max-height: 320px; overflow: auto; overflow-wrap: anywhere; }
+@media (max-width: 680px) {
+  .initialization-page { padding: 24px 16px; }
+  .initialization-checks, .initialization-form-grid { grid-template-columns: 1fr; }
+  .initialization-option-row { grid-template-columns: 1fr; margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #e7eaf0; }
+  .initialization-option-remove { margin-top: 0; justify-self: start; }
+  .initialization-header h1 { font-size: 24px; }
+}

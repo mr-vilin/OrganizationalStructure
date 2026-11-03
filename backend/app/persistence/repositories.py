@@ -176,8 +176,18 @@ class SqlSyncJobRepository:
             raise RuntimeError("DATABASE_SCHEMA_INCOMPLETE")
         return state
 
-    def submit_in_session(self, db: Session, job_type: str, root_department_id: str | None, requested_by: str, now: datetime, description: str | None = None, *, trigger_source: str | None = None) -> tuple[SyncJob, bool]:
-        self._lock_dataset(db)
+    def submit_in_session(self, db: Session, job_type: str, root_department_id: str | None, requested_by: str, now: datetime, description: str | None = None, *, trigger_source: str | None = None, initialization_flow: str | None = None) -> tuple[SyncJob, bool]:
+        state = self._lock_dataset(db)
+        if job_type == 'initialize':
+            import json
+            record = db.get(SystemSetting, 'initialization_flow')
+            flow = json.loads(record.value) if record else {}
+            if (state.initialization_status == 'complete' or not initialization_flow or flow.get('flow_id') != initialization_flow
+                    or flow.get('phase') != 'ready' or len(flow.get('checks', [])) != 4
+                    or any(c.get('status') != 'passed' for c in flow.get('checks', []))):
+                raise RuntimeError('INITIALIZATION_WIZARD_REQUIRED')
+        elif state.initialization_status != 'complete':
+            raise RuntimeError('INITIALIZATION_INCOMPLETE')
         lock_row = db.scalar(select(SystemSetting).where(SystemSetting.key == "task_queue_lock").with_for_update().execution_options(populate_existing=True))
         if lock_row is None:
             raise RuntimeError("DATABASE_SCHEMA_INCOMPLETE")
@@ -210,7 +220,7 @@ class SqlSyncJobRepository:
                     SyncJob.status == "queued",
                     or_(SyncJob.lease_expires_at.is_(None), SyncJob.lease_expires_at <= now),
                     # 初始化前不能认领核对任务，否则旧队首会反复抢占初始化。
-                    or_(SyncJob.type != "reconcile", initialized),
+                    or_(SyncJob.type == "initialize", initialized),
                 ).order_by(SyncJob.created_at, SyncJob.id).limit(1).with_for_update(skip_locked=True)
             )
             if job is None:
@@ -246,8 +256,10 @@ class SqlSyncJobRepository:
             return self.retry_in_session(db, job_id, requested_by, now)
 
     def retry_in_session(self, db: Session, job_id: str, requested_by: str, now: datetime) -> SyncJob:
-        self._lock_dataset(db)
+        state = self._lock_dataset(db)
         job = db.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update().execution_options(populate_existing=True))
+        if state.initialization_status != 'complete' or (job and job.type == 'initialize'):
+            raise ValueError('initialization must restart through the wizard')
         if job is None or job.status != "failed":
             raise ValueError("only failed jobs can be retried")
         job.status, job.requested_by, job.attempt = "queued", requested_by, job.attempt + 1

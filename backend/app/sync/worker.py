@@ -4,7 +4,7 @@ import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from app.persistence.models import WorkerLease, SyncJob, EventInbox, SystemSetting, DatasetState, Department, Employee, EmployeeDepartment, PendingFact, ChangeLog, SyncStaging
 from app.sync.collector import Candidate
 from app.persistence.repositories import SqlSyncJobRepository
@@ -20,10 +20,11 @@ SAFE_SYNC_ERRORS=frozenset({'FEISHU_API_ERROR','FEISHU_UNAVAILABLE','INVALID_PAG
 
 
 class Worker:
-    def __init__(self, sessions, collector, owner=None):
+    def __init__(self, sessions, collector, owner=None, initialization_settings=None):
         self.sessions, self.collector = sessions, collector
         self.owner, self.generation = owner or secrets.token_urlsafe(24), None
-        self.jobs, self.publisher = SqlSyncJobRepository(sessions), Publisher(sessions)
+        self.jobs, self.publisher = SqlSyncJobRepository(sessions), Publisher(sessions, initialization_settings)
+        self.initialization_settings = initialization_settings
         self.current_job = None
         self.initial_coverage_verified=bool(getattr(collector,'coverage_verified',False))
 
@@ -57,9 +58,14 @@ class Worker:
         with self.sessions.begin() as db:
             lease = db.scalar(select(WorkerLease).where(WorkerLease.id == 1).with_for_update())
             if lease.owner != self.owner or lease.generation != self.generation: raise ValueError('STALE_LEASE')
-            for job in db.scalars(select(SyncJob).where(SyncJob.status == 'running', SyncJob.lease_expires_at < now).with_for_update()):
-                job.status, job.lease_generation, job.updated_at = 'queued', job.lease_generation+1, now
-                job.lease_expires_at = None
+            self.jobs._lock_dataset(db)
+            for job in db.scalars(select(SyncJob).where(SyncJob.status == 'running', or_(SyncJob.lease_expires_at <= now, SyncJob.lease_expires_at.is_(None))).with_for_update()):
+                if job.type == 'initialize':
+                    from app.initialization.service import fail_interrupted
+                    fail_interrupted(db, job, now)
+                else:
+                    job.status, job.lease_generation, job.updated_at = 'queued', job.lease_generation+1, now
+                    job.lease_expires_at = None
 
     def step(self):
         now = utcnow()
@@ -76,6 +82,9 @@ class Worker:
                 return False
             self.current_job = (job.id, job.lease_generation)
             try:
+                if job.type == 'initialize':
+                    self._initialize(job)
+                    return True
                 self._refresh_coverage()
                 if hasattr(self.collector,'progress'): self.collector.progress=self._progress
                 root=job.root_department_id if job.type == 'subtree' else None
@@ -110,6 +119,26 @@ class Worker:
                 self._fail_event(event.event_id)
             return True
         return False
+
+    def _initialize(self, job):
+        from app.config import get_settings
+        from app.initialization.service import InitializationService
+        from app.initialization.validation import InitializationCollector, InitializationFailure, validate_definitions
+        settings = self.initialization_settings or get_settings()
+        service = InitializationService(self.sessions, settings, self.collector.api)
+        flow, mappings = service.execution_context(job.id)
+        definitions = validate_definitions([item for page in self.collector.api.pages('custom_attrs') for item in page.get('items', [])], mappings)
+        if definitions != flow.get('definitions'):
+            raise InitializationFailure('PREFLIGHT_STALE', '自定义字段定义已变化，请重新开始')
+        collector = InitializationCollector(self.collector.api, mappings, definitions, self._progress)
+        candidate = collector.run()
+        current_definitions = validate_definitions([item for page in self.collector.api.pages('custom_attrs') for item in page.get('items', [])], mappings)
+        if current_definitions != definitions:
+            raise InitializationFailure('PREFLIGHT_STALE', '同步期间自定义字段定义已变化，请重新开始')
+        service.execution_context(job.id)
+        candidate.initialization_proof = {'flow_id': flow['flow_id'], 'config_fingerprint': flow['config_fingerprint']}
+        collector._progress('publishing', candidate)
+        self.publisher.publish(candidate, job.id, job.lease_generation, owner=self.owner, lease_generation=self.generation)
 
     def _initialization_complete(self):
         with self.sessions() as db:
@@ -146,6 +175,10 @@ class Worker:
         from app.sync.coverage import CoverageService
         if hasattr(self.collector,'coverage_verified'):
             self.collector.coverage_verified=CoverageService(self.sessions).verified(self.initial_coverage_verified)
+        if hasattr(self.collector, 'custom_mappings'):
+            from app.feishu.binding import custom_attrs
+            self.collector.custom_mappings = custom_attrs(self.sessions)
+            self.collector.employee_type_options = set((self.collector.custom_mappings.get('employee_type_options') or {}).keys())
 
     def _previous_scope(self,root):
         with self.sessions() as db:
@@ -192,10 +225,12 @@ class Worker:
             self.jobs._lock_dataset(db)
             row = db.scalar(select(SyncJob).where(SyncJob.id == claimed.id).with_for_update())
             if row.status != 'running' or row.lease_generation != claimed.lease_generation: return
-            row.error_code = str(exc) if str(exc) in SAFE_SYNC_ERRORS else 'SYNC_FAILED'
-            row.error_detail = None
+            from app.initialization.validation import InitializationFailure
+            failure = isinstance(exc, InitializationFailure)
+            row.error_code = exc.code if failure else str(exc) if str(exc) in SAFE_SYNC_ERRORS else 'SYNC_FAILED'
+            row.error_detail = exc.message if failure else '飞书读取或后台处理失败，请检查连接和权限后重来' if row.type == 'initialize' else None
             row.phase, row.updated_at = 'collection_failed', now
-            row.status = 'queued' if row.attempt < 5 else 'failed'
+            row.status = 'queued' if row.type != 'initialize' and row.attempt < 5 else 'failed'
             if row.status == 'queued':
                 row.retry_count = (row.retry_count or 0) + 1
             row.lease_expires_at = now+timedelta(seconds=min(900, 15 * 2 ** row.attempt)) if row.status == 'queued' else None
@@ -204,6 +239,18 @@ class Worker:
             if row.status == 'failed':
                 row.finished_at = now
                 ReceiptRepository().finalize_job_in_session(db, row, now)
+                if row.type == 'initialize':
+                    from app.initialization.service import load_flow, save_flow
+                    from app.persistence.models import SyncJobDetail
+                    flow = load_flow(db)
+                    if flow.get('job_id') == row.id:
+                        issues = exc.issues if failure else []
+                        flow.update(phase='failed', last_error={'code': row.error_code, 'message': row.error_detail, 'issues': issues})
+                        save_flow(db, flow)
+                        for issue in issues:
+                            db.add(SyncJobDetail(job_id=row.id, object_type=issue.get('object_type', 'employee'),
+                                                 object_id=issue.get('object_id', '') or 'unknown', status='failed',
+                                                 error_code=row.error_code, error_message=issue['message'], attempt=1, finished_at=now))
 
 
 def main():

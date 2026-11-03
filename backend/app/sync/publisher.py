@@ -8,7 +8,8 @@ from app.capabilities.receipts import ReceiptRepository
 
 
 class Publisher:
-    def __init__(self, sessions): self.sessions = sessions
+    def __init__(self, sessions, initialization_settings=None):
+        self.sessions, self.initialization_settings = sessions, initialization_settings
 
     def publish(self, candidate, job_id=None, generation=None, event_id=None, owner=None, lease_generation=None):
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -23,7 +24,23 @@ class Publisher:
             job = db.scalar(select(SyncJob).where(SyncJob.id == job_id).with_for_update()) if job_id else None
             if job_id and (not job or job.status != 'running' or job.lease_generation != generation or not job.lease_expires_at or job.lease_expires_at <= now):
                 raise ValueError('STALE_LEASE')
+            initializing = state.initialization_status != 'complete'
+            if initializing:
+                from app.config import get_settings
+                from app.initialization.service import load_flow, fingerprint, custom_attrs_in_session
+                from app.initialization.validation import InitializationFailure, validate_candidate
+                flow = load_flow(db)
+                proof = candidate.initialization_proof or {}
+                if (not job or job.type != 'initialize' or flow.get('job_id') != job_id or flow.get('phase') != 'running'
+                        or proof.get('flow_id') != flow.get('flow_id') or not proof.get('flow_id')
+                        or proof.get('config_fingerprint') != flow.get('config_fingerprint')
+                        or flow.get('config_fingerprint') != fingerprint(self.initialization_settings or get_settings(), custom_attrs_in_session(db))
+                        or db.get(SystemSetting, 'coverage_invalidated')):
+                    raise InitializationFailure('INITIALIZATION_WIZARD_REQUIRED', '缺少有效预检或当前初始化流程已失效')
+                validate_candidate(candidate)
             candidate=self._defer_unresolved(db,candidate,now)
+            if initializing:
+                validate_candidate(candidate)
             if job:
                 job.total_count = len(candidate.departments) + len(candidate.employees) + len(candidate.pending)
             if job:
@@ -93,6 +110,14 @@ class Publisher:
                         state.coverage_status='unknown'
                 state.initialization_status = 'complete'
                 if state.dataset_epoch == 'pending': state.dataset_epoch = uuid.uuid4().hex
+                if initializing:
+                    from app.initialization.service import save_flow
+                    flow.update(phase='complete', completed_at=now.isoformat(),
+                                counts={'departments': sum(not d.get('is_virtual_root') for d in candidate.departments.values()), 'employees': len(candidate.employees)})
+                    flow.pop('samples', None)
+                    save_flow(db, flow)
+                    db.add(ChangeLog(object_type='initialization', object_id=flow['flow_id'], source='worker', actor=owner,
+                                     job_id=job_id, before_data={'status': 'pending'}, after_data={'status': 'complete', 'counts': flow['counts']}, committed_at=now))
             if changes:
                 db.flush()
                 StoreAdminService._rebuild_projection(db)

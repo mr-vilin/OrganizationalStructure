@@ -1,5 +1,11 @@
 # 部署说明
 
+## 标准部署入口
+
+开发完成默认部署**本地 Docker**；线上测试与正式环境仅在用户当次明确要求时部署。环境台账、固定命令、制品、验证、回退及授权边界统一见 [环境与标准发布流程](ENVIRONMENTS.md)，配置源为 `environments.json`，脚本入口为 `release.py`。
+
+普通更新使用 `backend/.venv/Scripts/python.exe deploy/release.py deploy`，默认仅更新本地 app/MCP。数据库版本不匹配时必须停止，另行执行已授权的迁移流程。以下历史首次搭建和迁移命令不替代标准发布入口；使用新脚本后启动必须带其镜像覆盖配置，不能直接 `docker compose up --build` 覆盖已验收版本。
+
 ## 产品版本与构建
 
 产品版本从根目录 `version.json` 读取，规范见 [版本规范](../docs/versioning.md)。当前重设的开发初始基线为 0.1.0，尚未正式上线。普通开发构建不显示发布日期；旧容器不会因文件修改自动更新版本，需另行构建并部署镜像后核对系统信息页。
@@ -23,7 +29,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Compose 先等待 MySQL 就绪，再运行 Alembic 迁移，迁移成功后启动应用。应用进程监督器负责 HTTP、同步 worker 与飞书长连接三个独立进程；任一必要进程意外退出时终止其余进程，由容器重启恢复。长连接回调仅快速持久入箱，远程回查由 worker 执行；启动和断线恢复后安排全量核对。
+Compose 先等待 MySQL 就绪，再运行 Alembic 迁移，迁移成功后启动应用。应用进程监督器负责 HTTP、同步 worker 与飞书长连接三个独立进程；任一必要进程意外退出时终止其余进程，由容器重启恢复。长连接回调仅快速持久入箱，远程回查由 worker 执行；已初始化时启动和断线恢复后安排全量核对，未初始化时保持事件监听但不提交普通核对任务。
 
 ## 飞书应用配置
 
@@ -62,7 +68,7 @@ docker compose run --rm --no-deps app python -m deploy.recovery --application-st
 docker compose up -d app
 ```
 
-该命令以单事务重置世代、隔离旧事件与未完成任务、撤销 OAuth state/会话/API 凭据，并写审计。门店资料与来源事实保留；初始化变为 pending，全量核对成功前读取数据返回 503。责任人参数必须填写实际标识。
+该命令以单事务重置世代、隔离旧事件与未完成任务、撤销 OAuth state/会话/API 凭据，并写审计。此时门店资料与来源事实暂时保留；初始化变为 pending，向导进入 cleanup_required。管理员随后在向导中发起清理并重新初始化，清理包含门店编码和备注；初始化成功前业务读取被门禁阻止。责任人参数必须填写实际标识。
 
 如果备份中已无可用管理员，可在该命令中明确追加 `--admin-open-id ou_实际标识`，把经线下核验的同应用人员加入白名单并写审计。环境变量中的初始白名单只在首次初始化生效，重启不会自动恢复被删除的管理员。
 
@@ -106,7 +112,7 @@ curl --fail http://127.0.0.1:8000/health/live
 curl --fail http://127.0.0.1:8000/health/ready
 ```
 
-重启后由管理员创建全量同步任务，确认新 `dataset_epoch`、初始化完成、覆盖验收状态和门店资料，再通知下游重新全量拉取。
+重启后由管理员在全屏向导中重新初始化，明确清除旧业务资料，再完成预检、覆盖验收及全量同步。确认新 `dataset_epoch`、初始化完成和覆盖状态；旧门店编码／备注已清除，按需要重新维护，再通知下游重新全量拉取。
 
 ## 数据库集成测试
 
@@ -221,6 +227,16 @@ stdio 与 HTTP 使用同一工具、身份、版本、幂等和人工确认策�
 
 部署人员可执行 `docker compose --profile agent exec -T mcp python -m deploy.mcp_acceptance`，通过官方 HTTP 客户端验证完整目录、实际后台只读调用和人工拒绝边界。该命令会发起并明确拒绝一次合成同步申请，不会批准修改；输出只包含固定检查结果。健康探针只发现工具，不能代替此业务链路验收。
 
+### 腾讯云受信 SSH 客户端
+
+`deploy/mcp-stdio-ssh.ps1` 通过本机 SSH 别名 `tencent_test_col` 连接 `/srv/organization-directory` 的 `compose.json`，在远端 MCP 容器中启动 stdio；它与上面的本机入口是两个独立环境。SSH 要求现有可信主机记录、非交互密钥认证及远端受控的 Docker 执行权限，不自动接受陌生主机密钥、不输出服务令牌，也不公开 MCP 端口。
+
+```powershell
+codex mcp add organization-directory-cloud -- powershell.exe -NoProfile -File "D:\WorkBench\AI Projects\OrganizationalStructure\deploy\mcp-stdio-ssh.ps1"
+```
+
+该注册只添加云端入口，不替换本机 `organization-directory`。新增后需在客户端重新加载并确认工具目录；注册成功不等于当前对话已经加载工具，也不等于已经批准业务写入。云端部署与验收状态见 [接入与业务验收记录](../docs/mcp-client-and-live-acceptance-2026-10-24.md)。
+
 ## Pro / Umi 管理端构建
 
 前端采用 Umi Max 4.7.23、Utoopack 和 ProComponents 3.1.14-2（预发布），沿用 Node 24 多阶段构建及 Python 3.13 单应用镜像。Docker 在复制前端、版本脚本和版本声明后执行严格 `npm ci`，postinstall 生成 Umi 类型；不复制宿主机 `.umi` 和缓存。`ORG_BUILD_INFO_FILE` 继续把同一份元信息交给前后端。
@@ -228,3 +244,40 @@ stdio 与 HTTP 使用同一工具、身份、版本、幂等和人工确认策�
 静态入口支持根级与子目录 JS/CSS/chunk、字体、图片和 `build-info.json`，检查解析后的目录边界；入口和元信息使用 `no-cache`，缺失资源及保留 API/认证路径返回 404，业务导航回退到 index.html。回滚必须使用配套的完整镜像，同时回退入口、chunk 和元信息；无需数据库迁移。
 
 验证状态与 Docker Hub 网络限制见[迁移验收记录](../docs/architecture/ant-design-pro-migration-acceptance-2026-10-25.md)。
+
+## 初始化向导迁移（0010）
+
+本节为执行手册，不代表已部署或已获得目标业务库执行授权。适用于 MySQL 8.4；迁移为 `backend/migrations/versions/0010_initialization_wizard.py`，沿用现有表、字段、中文注释、字符集、索引与约束。已确认流程与清理边界见[初始化实施记录](../docs/architecture/initialization-wizard-clarification-2026-10-26.md)。
+
+### 执行前检查
+
+1. 明确环境、Compose 项目、目标库和匹配镜像；停止 HTTP、worker、飞书监听和其他写入方，保留迁移前备份并验证其可恢复。连接凭据使用受限配置，不写入命令行或日志。
+2. 使用应用连接工厂只读核验实际 MySQL 版本、会话 `utf8mb4` / `utf8mb4_general_ci` 及数据库规范；按 `schema_snapshot` 保存结构证据，包含原有 `utf8mb4_bin` 稳定 ID 列。不要用运维客户端的会话设置替代应用会话证据。
+3. 对已有实例记录下列查询结果。升级前版本应为 `0009_operation_receipt`；更早版本先审查其全部中间迁移。已经是 `0010_initialization_wizard` 时不得手工重跑本迁移 SQL。
+
+```sql
+SELECT VERSION(), DATABASE(), @@character_set_connection, @@collation_connection;
+SELECT version_num FROM alembic_version;
+SELECT id, dataset_epoch, data_version, initialization_status, coverage_status FROM dataset_state WHERE id = 1;
+SELECT (SELECT COUNT(*) FROM department) AS departments,
+       (SELECT COUNT(*) FROM employee) AS employees;
+SELECT status, COUNT(*) AS jobs FROM sync_job GROUP BY status;
+SELECT status, COUNT(*) AS events FROM event_inbox GROUP BY status;
+SELECT id, generation, owner, expires_at FROM worker_lease WHERE id = 1;
+SELECT `key`, JSON_UNQUOTE(JSON_EXTRACT(value, '$.phase')) AS phase
+FROM system_setting WHERE `key` = 'initialization_flow';
+```
+
+### 执行与验证
+
+在目标执行获准后，沿用 Compose 的 `migrate` 服务执行 Alembic 升级至 head，成功后再启动匹配的新应用。不要让旧应用与新版本同时写入。迁移将旧完成标记改为 pending、覆盖改为 unknown，隔离旧排队／运行任务和排队事件，释放旧 worker 租约，并写入 `migration:0010` 审计；迁移本身不清理部门、人员或门店资料。
+
+执行后复核上述查询：版本为 `0010_initialization_wizard`，旧实例流程为 `cleanup_required`（全新空实例为 `pending`），旧活动任务已终结，旧队列事件已隔离，旧租约已释放；业务数量与迁移前一致。对比迁移前后结构快照，除版本与状态数据外，不应出现结构变化。
+
+启动后检查 HTTP、worker 与飞书监听均持续运行；非管理员仍不可登录，管理员只能进入向导。旧实例点击“重新初始化”才清理业务资料及门店编码／备注；前四步通过后点击“立即同步”。最终提交成功后核验 `initialization_status=complete`、流程 complete、任务 succeeded 和覆盖 complete。再次重启或执行正常 `upgrade head` 后完成状态保持，不能重复清理。真实企业权限、字段及全员／无部门名单须按向导提供证据验收。
+
+### 失败恢复
+
+迁移失败时保持停写，保留错误与迁移版本证据；MySQL 迁移可能部分提交，不得假定自动回滚全部语句。`0010` 的 downgrade 明确拒绝自动恢复旧完成标记。恢复应使用迁移前备份及对应旧镜像，并按恢复规范撤销会话和凭据、隔离旧任务；不得仅修改 Alembic 版本或完成字段。
+
+已经在新向导中清理或写入新数据后，回退备份会丢失备份之后的数据，须先保存现状并确认恢复范围。继续使用新版本恢复备份时，先迁移至当前 head，再执行本手册的恢复状态重置，随后由管理员重新完成向导。初始化同步失败按页面“重新开始”处理，不以数据库降级替代流程重试。

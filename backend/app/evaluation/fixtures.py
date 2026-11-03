@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.evaluation.cases import validate_case
 from app.evaluation.models import EvaluationCase
-from app.persistence.database import create_mysql_engine, session_factory
+from app.persistence.database import CURRENT_SCHEMA_HEAD, create_mysql_engine, session_factory
 from app.persistence import models as m
 
 
@@ -50,7 +50,7 @@ def verify_test_database(connection) -> dict:
     if tuple(schema) != ('utf8mb4', 'utf8mb4_general_ci'):
         raise ValueError('EVALUATION_MYSQL_SCHEMA_MISMATCH')
     revisions = connection.scalars(text('SELECT version_num FROM alembic_version')).all()
-    if revisions != ['0009_operation_receipt']:
+    if revisions != [CURRENT_SCHEMA_HEAD]:
         raise ValueError('EVALUATION_MIGRATION_HEAD_MISMATCH')
     columns = connection.execute(text('SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS '
                                       'WHERE TABLE_SCHEMA=DATABASE()')).all()

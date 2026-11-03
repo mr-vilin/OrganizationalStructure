@@ -16,12 +16,20 @@ from .admin.router import router as admin_router
 from .capabilities.router import router as capability_router
 from .capabilities.errors import CapabilityError
 from .version import product_build_info
+from .initialization.router import router as initialization_router
+from .initialization.validation import InitializationFailure
 
 
 app = FastAPI(title="组织架构维护系统", version="1.0.0")
 app.include_router(admin_router)
 app.include_router(capability_router)
+app.include_router(initialization_router)
 log = logging.getLogger("organization.api")
+
+
+@app.exception_handler(InitializationFailure)
+async def initialization_error_handler(request: Request, exc: InitializationFailure):
+    return JSONResponse({'error': {'code': exc.code, 'message': exc.message, 'fields': exc.issues}}, status_code=409)
 
 
 def error(code: str, message: str, status: int, *, fields: list | None = None) -> JSONResponse:
@@ -120,7 +128,10 @@ def oauth_callback(code: str | None = None, state: str | None = None, org_oauth_
     try:
         if not code: raise ValueError('OAUTH_CODE_MISSING')
         session,csrf,session_token=OAuthService(runtime.sessions,settings,FeishuClient(settings.feishu_app_id,settings.feishu_app_secret.get_secret_value())).complete(state,org_oauth_state,code)
-        response=RedirectResponse('/organization',status_code=302)
+        from .persistence.models import DatasetState
+        with runtime.sessions() as db:
+            initialized = db.get(DatasetState, 1).initialization_status == 'complete'
+        response=RedirectResponse('/organization' if initialized else '/initialize',status_code=302)
         response.set_cookie('org_session',session_token,max_age=43200,httponly=True,secure=True,samesite='lax')
         response.set_cookie('org_csrf',csrf,max_age=43200,httponly=True,secure=True,samesite='strict',path='/admin/auth')
     except ValueError as exc:
@@ -133,13 +144,17 @@ def oauth_callback(code: str | None = None, state: str | None = None, org_oauth_
 
 
 @app.get('/admin/auth/session')
-def auth_session(org_csrf: str | None = Cookie(default=None), identity=Depends(get_admin_identity), settings=Depends(get_settings)):
+def auth_session(org_csrf: str | None = Cookie(default=None), identity=Depends(get_admin_identity), settings=Depends(get_settings), runtime=Depends(get_runtime)):
     import hashlib, hmac
     secret=settings.session_secret.get_secret_value() if settings.session_secret else ''
     digest=hmac.new(secret.encode(),(org_csrf or '').encode(),hashlib.sha256).hexdigest()
     if not org_csrf or not hmac.compare_digest(digest,identity.csrf_hash):
         raise HTTPException(403,{'code':'CSRF_REQUIRED','message':'登录会话缺少有效 CSRF，请重新登录'})
-    return JSONResponse({'data':{'open_id':identity.open_id,'csrf_token':org_csrf},'meta':{}},headers={'Cache-Control':'no-store'})
+    from .persistence.models import DatasetState
+    with runtime.sessions() as db:
+        state = db.get(DatasetState, 1)
+        initialized = state is not None and state.initialization_status == 'complete'
+    return JSONResponse({'data':{'open_id':identity.open_id,'csrf_token':org_csrf,'initialization_complete':initialized},'meta':{}},headers={'Cache-Control':'no-store'})
 
 
 @app.post("/admin/auth/logout")

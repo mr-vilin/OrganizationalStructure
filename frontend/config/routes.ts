@@ -1,5 +1,6 @@
 // 菜单与业务地址共用一份声明；人员详情归属于组织架构。
 export default [
+  { path: '/initialize', layout: false, component: './InitializationPage', hideInMenu: true },
   { path: '/', redirect: '/organization' },
   { path: '/organization', name: '组织架构', icon: 'ApartmentOutlined', component: './OrganizationPage' },
   { path: '/employees/:id', name: '人员详情', component: './EmployeePage', hideInMenu: true, parentKeys: ['/organization'] },
