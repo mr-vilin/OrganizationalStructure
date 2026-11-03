@@ -147,7 +147,8 @@ class Host:
         if self.target.get('environment') == 'production' and (manifest['dirty'] or not manifest.get('release_tag')):
             raise RuntimeError('PRODUCTION_REQUIRES_RELEASE')
         image_id = run(['docker', 'image', 'inspect', manifest['image'], '--format', '{{.Id}}']).strip()
-        if image_id != manifest['image_id']:
+        # containerd 可能返回 OCI 索引摘要，经典存储返回配置摘要；两者来自同一校验过的导出包。
+        if image_id not in (manifest['image_id'], manifest.get('image_config_id')):
             raise RuntimeError('IMAGE_ID_MISMATCH')
         archive = self.archive_root / manifest['release_id']
         archive.mkdir(parents=True, exist_ok=False)

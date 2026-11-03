@@ -1,6 +1,9 @@
 """发布的环境隔离、制品完整性、迁移阻断及失败恢复测试。"""
 import json
+import hashlib
+import io
 from pathlib import Path
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -10,6 +13,49 @@ from release_host import Host, require_idle, require_schema, write_json
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_archive_configuration_digest_uses_the_requested_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / 'image.tar'
+            config = b'{"architecture":"amd64","os":"linux"}'
+            with tarfile.open(archive, 'w') as bundle:
+                for name, data in [('manifest.json', json.dumps([
+                    {'RepoTags': ['other:tag'], 'Config': 'other.json'},
+                    {'RepoTags': ['app:release'], 'Config': 'config.json'},
+                ]).encode()), ('config.json', config)]:
+                    item = tarfile.TarInfo(name)
+                    item.size = len(data)
+                    bundle.addfile(item, io.BytesIO(data))
+            self.assertEqual(release.image_config_id(archive, 'app:release'),
+                             'sha256:' + hashlib.sha256(config).hexdigest())
+            with self.assertRaisesRegex(RuntimeError, 'IMAGE_ARCHIVE_TAG_MISMATCH'):
+                release.image_config_id(archive, 'missing:tag')
+
+    def test_switch_uses_the_target_engine_image_id_and_rejects_other_images(self):
+        for actual in ('sha256:index', 'sha256:config', 'sha256:other'):
+            with self.subTest(actual=actual), tempfile.TemporaryDirectory() as directory:
+                host = Host({'root': directory, 'compose': 'compose.yaml', 'project': 'test',
+                             'services': ['app', 'mcp'], 'transport': 'ssh'})
+                before = {'schema': 'head', 'active_jobs': 0, 'flow_phase': 'pending',
+                          'state': {'initialization_status': 'pending'}, 'counts': {}, 'build': {}}
+                manifest = {'schema': 'head', 'image': 'new', 'image_id': 'sha256:index',
+                            'image_config_id': 'sha256:config', 'release_id': 'release-test', 'build': {}}
+                def command(args, **kwargs):
+                    if args[:3] == ['docker', 'image', 'inspect']:
+                        return actual
+                    return json.dumps(before) if args[-1] == '-' else ''
+                with patch('release_host.run', side_effect=command), patch.object(host, 'probe', return_value=before), \
+                     patch.object(host, 'images', return_value={'app': 'sha256:old'}), \
+                     patch.object(host, 'up') as up, patch.object(host, 'verify', return_value={'build': {}, 'assets': []}) as verify:
+                    if actual == 'sha256:other':
+                        with self.assertRaisesRegex(RuntimeError, 'IMAGE_ID_MISMATCH'):
+                            host.apply(manifest)
+                        up.assert_not_called()
+                        self.assertFalse(host.archive_root.exists())
+                    else:
+                        self.assertEqual(host.apply(manifest)['status'], 'deployed')
+                        verify.assert_called_once_with(actual)
+                        self.assertEqual(json.loads(host.override.read_text())['services']['app']['image'], actual)
+
     def test_stopped_app_probe_uses_one_off_without_starting_workers(self):
         host = Host({'root': '.', 'compose': 'compose.yaml', 'project': 'test'})
         with patch('release_host.run', side_effect=['', '{"schema": "0010"}']) as command:

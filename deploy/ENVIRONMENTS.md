@@ -31,6 +31,7 @@
 - `build-images.json` 固定此前已经跑通的官方 ECR Node 24 / Python 3.13 镜像摘要。构建脚本只替换 Dockerfile 的 FROM 地址，不复制维护第二份 Dockerfile；基础镜像升级需更新该文件并验证。
 - `build` 从 Git 受控与未忽略文件生成源码快照，包含 backend、frontend、deploy、scripts 和构建入口，不携带 `.env`、本机依赖、缓存或 Git 历史。制品保存于 `.cache/artifacts/<release-id>/`，包含逐文件 SHA-256、提交、dirty、schema head、镜像 ID、构建信息和镜像压缩包校验值。
 - 每次构建使用独立标签，禁止覆盖既有制品。测试、正式部署必须明确传入制品目录。正式环境启用后必须使用干净版本标签构建，并提升已成功部署测试的同一个镜像，不现场重建。
+- 制品同时记录构建端 `image_id` 与从 Docker 导出包读取的 `image_config_id`。containerd 和经典存储可能对同一制品返回不同 ID；目标端必须匹配其中一个摘要，随后以目标端实际 ID 固定 Compose 并核验运行容器。传输仍校验完整压缩包 SHA-256，不因 ID 表示差异跳过制品校验。
 
 ## 常用命令
 

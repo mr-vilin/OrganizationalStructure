@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,17 @@ def digest(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             value.update(chunk)
     return value.hexdigest()
+
+
+def image_config_id(archive, image):
+    """从 Docker 导出包读取配置摘要，兼容两种镜像存储引擎的 ID 表示。"""
+    with tarfile.open(archive, 'r:*') as bundle:
+        with bundle.extractfile('manifest.json') as stream:
+            entries = [entry for entry in json.load(stream) if image in (entry.get('RepoTags') or [])]
+        if len(entries) != 1:
+            raise RuntimeError('IMAGE_ARCHIVE_TAG_MISMATCH')
+        with bundle.extractfile(entries[0]['Config']) as stream:
+            return 'sha256:' + hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 def environment(name, action, authorization):
@@ -88,11 +100,12 @@ def build(release_tag=None):
                           'import json; from app.version import product_build_info; print(json.dumps(product_build_info()))']))
     archive = out / 'image.tar'
     run(['docker', 'save', '-o', str(archive), image])
+    config_id = image_config_id(archive, image)
     compressed = out / 'image.tar.gz'
     with archive.open('rb') as src, gzip.open(compressed, 'wb', compresslevel=1) as dst:
         shutil.copyfileobj(src, dst)
     archive.unlink()
-    manifest = {'release_id': release_id, 'image': image, 'image_id': image_id, 'commit': commit,
+    manifest = {'release_id': release_id, 'image': image, 'image_id': image_id, 'image_config_id': config_id, 'commit': commit,
                 'dirty': dirty, 'release_tag': release_tag, 'schema': schema, 'build': info,
                 'files': files, 'build_images': bases, 'archive_sha256': digest(compressed)}
     (out / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
